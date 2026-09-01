@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# Playwright artifacts that may contain session data — evidence we choose
+# to commit is copied out explicitly, not dumped wholesale from here.
+test-results/
+playwright-report/
+.playwright-mcp/
+
+# Never commit real credentials or raw traces that might carry cookies/tokens.
+*.har

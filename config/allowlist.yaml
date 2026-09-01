@@ -1,0 +1,26 @@
+# Safety allowlist — enforced by both the discovery loop (agent/loop.py)
+# and the replay executor (replay/executor.py) before any action.
+# See safety/allowlist.py for the loader and safety/policy.py for how
+# risky/irreversible action *types* are additionally handled per-step.
+
+target_app: parabank
+
+allowed_domains:
+  - parabank.parasoft.com
+
+# Prefix match against the URL path. "*" suffix is stripped before matching.
+allowed_routes:
+  - /parabank/*
+
+allowed_actions:
+  - navigate
+  - click
+  - fill
+  - select
+  - wait_for
+  - extract
+  - assert
+
+# TODO: as capabilities are recorded, note here which ones touch actions
+# classified risky/irreversible (schema.RiskLevel) so a reviewer can see
+# the full risk surface in one place, not just per-artifact.
