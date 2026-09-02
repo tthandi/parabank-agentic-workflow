@@ -8,51 +8,135 @@ operator without spinning up a second session — see escalation/handoff.py.
 
 from __future__ import annotations
 
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from pathlib import Path
 
-from cua.artifact.schema import Locator
-from cua.surface.types import AccessibilityNode, Observation
+from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+
+from cua.artifact.schema import Locator, LocatorStrategy
+from cua.replay.locator import LocatorResolutionError
+from cua.surface.types import Observation
+
+ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy kind)
 
 
 class BrowserSurface:
     def __init__(self, headless: bool = False) -> None:
         self.headless = headless
         self._playwright = None
+        self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
     def start(self, entry_url: str) -> None:
-        """TODO: launch chromium, start context.tracing (for evidence/), navigate."""
-        raise NotImplementedError
+        self._playwright = sync_playwright().start()
+        self.browser = self._playwright.chromium.launch(headless=self.headless)
+        self.context = self.browser.new_context()
+        self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        self.page = self.context.new_page()
+        self.page.goto(entry_url)
 
     def stop(self, save_trace_to: str | None = None) -> None:
-        """TODO: stop tracing (export .zip if save_trace_to given), close context/browser."""
-        raise NotImplementedError
+        """Always safe to call, even after a partial/failed start() — every
+        caller (agent loop, replay executor) runs this in a `finally` so a
+        failed run still leaves an evidence trace where possible."""
+        try:
+            if self.context is not None:
+                if save_trace_to:
+                    Path(save_trace_to).parent.mkdir(parents=True, exist_ok=True)
+                    self.context.tracing.stop(path=save_trace_to)
+                else:
+                    self.context.tracing.stop()
+        finally:
+            if self.context is not None:
+                self.context.close()
+            if self.browser is not None:
+                self.browser.close()
+            if self._playwright is not None:
+                self._playwright.stop()
+            self.context = self.browser = self.page = self._playwright = None
 
     def observe(self) -> Observation:
-        """TODO: snapshot the accessibility tree via page.accessibility.snapshot()
-        (or CDP AX tree) and wrap it into an Observation. This is the primary
-        perception channel — bias toward it over raw DOM/screenshot parsing
-        so the same approach has a shot at working on non-clean-DOM legacy
-        pages (see REPORT.md #4)."""
-        raise NotImplementedError
+        assert self.page is not None
+        ax = self.page.locator("body").aria_snapshot()
+        text = self.page.inner_text("body")
+        return Observation(
+            url=self.page.url,
+            title=self.page.title(),
+            aria_snapshot=ax,
+            visible_text_excerpt=text[:2000],
+        )
 
-    def resolve(self, locator: Locator):
-        """TODO: try each LocatorStrategy in order, descending frame_path first;
-        return the first Playwright Locator that resolves to exactly one
-        visible element. This is the fallback chain that keeps replay
-        working across small per-tenant differences."""
-        raise NotImplementedError
+    def resolve_strategy(self, strategy: LocatorStrategy):
+        """Resolve a single strategy. Returns a Playwright Locator iff it
+        matches exactly one element; None otherwise (no match, or ambiguous —
+        treated the same, since acting on an ambiguous match is not safe)."""
+        assert self.page is not None
+        scope = self.page
+        for frame_selector in strategy.frame_path:
+            scope = scope.frame_locator(frame_selector)
 
-    def click(self, locator: Locator) -> None:
-        raise NotImplementedError
+        if strategy.kind == "role":
+            role, _, name = strategy.value.partition(":")
+            loc = scope.get_by_role(role, name=name) if name else scope.get_by_role(role)
+        elif strategy.kind == "label":
+            loc = scope.get_by_label(strategy.value)
+        elif strategy.kind == "text":
+            loc = scope.get_by_text(strategy.value, exact=False)
+        elif strategy.kind == "test_id":
+            loc = scope.get_by_test_id(strategy.value)
+        elif strategy.kind == "css":
+            loc = scope.locator(strategy.value)
+        elif strategy.kind == "xpath":
+            loc = scope.locator(f"xpath={strategy.value}")
+        else:
+            return None
 
-    def fill(self, locator: Locator, value: str) -> None:
-        raise NotImplementedError
+        try:
+            if loc.count() == 1:
+                return loc
+        except Exception:
+            return None
+        return None
+
+    def resolve(self, locator: Locator) -> ResolvedLocator | None:
+        """Try each strategy in rank order; return the first that resolves
+        plus which strategy kind won, or None if every strategy failed."""
+        for strategy in locator.strategies:
+            found = self.resolve_strategy(strategy)
+            if found is not None:
+                return found, strategy.kind
+        return None
+
+    def click(self, locator: Locator) -> str:
+        resolved = self.resolve(locator)
+        if resolved is None:
+            raise LocatorResolutionError(locator, locator.strategies)
+        playwright_locator, winning_kind = resolved
+        playwright_locator.click()
+        return winning_kind
+
+    def fill(self, locator: Locator, value: str) -> str:
+        resolved = self.resolve(locator)
+        if resolved is None:
+            raise LocatorResolutionError(locator, locator.strategies)
+        playwright_locator, winning_kind = resolved
+        playwright_locator.fill(value)
+        return winning_kind
+
+    def select(self, locator: Locator, value: str) -> str:
+        resolved = self.resolve(locator)
+        if resolved is None:
+            raise LocatorResolutionError(locator, locator.strategies)
+        playwright_locator, winning_kind = resolved
+        playwright_locator.select_option(value)
+        return winning_kind
 
     def current_url(self) -> str:
         assert self.page is not None
         return self.page.url
 
     def screenshot(self, out_path: str) -> str:
-        raise NotImplementedError
+        assert self.page is not None
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        self.page.screenshot(path=out_path)
+        return out_path

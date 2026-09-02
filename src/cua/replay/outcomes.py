@@ -38,4 +38,10 @@ class ReplayResult(BaseModel):
     # a transient load) and succeeded anyway — informational, not fatal.
     recovered_steps: list[str] = []
 
+    # step_id -> which LocatorStrategy.kind actually resolved it this replay.
+    # The per-tenant/version drift signal from REPORT.md #4: a step whose
+    # resolved_via drifts from "role" to "css" across replays is measurably
+    # more fragile, without anyone having to eyeball a screenshot to notice.
+    resolved_via: dict[str, str] = {}
+
     evidence_path: str | None = None

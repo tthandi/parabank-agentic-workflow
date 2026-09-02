@@ -1,10 +1,12 @@
 """Locator resolution with fallback — the piece that makes replay resilient
 to small drift instead of brittle to it.
 
-Delegates the actual Playwright calls to BrowserSurface.resolve; this module
-is where the fallback *policy* (which strategy to try next, and when to give
-up vs. retry vs. treat as a business outcome) lives, kept separate so it's
-testable without a live browser.
+The actual per-strategy Playwright calls live on BrowserSurface
+(surface/browser.py: resolve_strategy/resolve); this module just wraps
+`surface.resolve()` with a fixed error type and exposes it as its own
+importable function so tests can exercise the fallback contract against a
+fake surface (any object with a `.resolve(locator) -> (obj, kind) | None`
+method) without a live browser.
 """
 
 from __future__ import annotations
@@ -20,7 +22,11 @@ class LocatorResolutionError(Exception):
 
 
 def resolve_with_fallback(surface, locator: Locator):
-    """TODO: try surface.resolve for each strategy in locator.strategies in
-    order; return the first that matches exactly one visible element; raise
-    LocatorResolutionError (tried=all) if none match."""
-    raise NotImplementedError
+    """Return (resolved_element, winning_strategy_kind). `winning_strategy_kind`
+    is the `resolved_via` signal recorded per-step by replay/executor.py — the
+    concrete per-tenant drift metric described in REPORT.md #4 (e.g. "primary
+    role locator failed, fell back to css on N% of replays")."""
+    resolved = surface.resolve(locator)
+    if resolved is None:
+        raise LocatorResolutionError(locator, locator.strategies)
+    return resolved
