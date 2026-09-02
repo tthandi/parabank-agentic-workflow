@@ -4,7 +4,9 @@ human to act on it (core requirement 3.6, first bullet).
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -20,9 +22,13 @@ class InterventionRequest(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
-def raise_intervention(request: InterventionRequest) -> None:
-    """TODO: persist the request (e.g. evidence/interventions/<run_id>.json)
-    and notify the mock operator surface (escalation/operator_mock.py) that
-    a session is waiting. Real implementation would push to a queue/console;
-    here a file + CLI prompt is the documented mock (see REPORT.md #5)."""
-    raise NotImplementedError
+def raise_intervention(request: InterventionRequest, evidence_dir: Path) -> Path:
+    """Persist the request alongside the run's other evidence and return the
+    path written. A real deployment would push this to an operator queue;
+    here it's a file plus the CLI prompt in operator_mock.py — documented as
+    the intentional mock (see REPORT.md #5)."""
+    out_dir = Path(evidence_dir) / "interventions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{int(time.time() * 1000)}.json"
+    out_path.write_text(request.model_dump_json(indent=2))
+    return out_path

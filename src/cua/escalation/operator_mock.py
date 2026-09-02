@@ -15,12 +15,36 @@ from cua.escalation.handoff import HandoffController
 from cua.escalation.intervention import InterventionRequest
 
 
-def prompt_operator(request: InterventionRequest, handoff: HandoffController) -> None:
-    """TODO:
-    - print request context (goal, current step, reason, url, screenshot path)
-    - handoff.pause_and_cede(request.reason)
-    - block on input() describing what the human should do and how to
-      signal completion
-    - handoff.resume()
-    """
-    raise NotImplementedError
+def prompt_operator(request: InterventionRequest, handoff: HandoffController, logger=None) -> dict:
+    """Block until a human signals they're done, then resume. Returns the
+    post-resume observation snapshot (see HandoffController.resume)."""
+    print("=" * 72)
+    print("HUMAN INTERVENTION REQUESTED")
+    print(f"  run_id:      {request.run_id}")
+    print(f"  capability:  {request.capability_id or '(discovery run, no artifact yet)'}")
+    print(f"  goal:        {request.goal}")
+    print(f"  step:        {request.current_step_id or '(n/a)'}")
+    print(f"  reason:      {request.reason}")
+    print(f"  url:         {request.url}")
+    if request.screenshot_path:
+        print(f"  screenshot:  {request.screenshot_path}")
+    print("=" * 72)
+
+    before = handoff.pause_and_cede(request.reason)
+    if logger:
+        logger.log("handoff_ceded", reason=request.reason, url=before["url"])
+
+    input(
+        "The browser window is now yours to operate directly. Take whatever "
+        "action is needed, then press Enter here to hand control back and "
+        "resume automation..."
+    )
+
+    after = handoff.resume()
+    if logger:
+        logger.log(
+            "handoff_resumed",
+            url=after["url"],
+            human_actions=handoff.human_actions_log[-1:],
+        )
+    return after

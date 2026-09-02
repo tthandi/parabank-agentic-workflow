@@ -14,6 +14,9 @@ from pathlib import Path
 
 from cua.agent.llm import AgentAction, LLMDecider
 from cua.artifact.schema import Locator, LocatorStrategy
+from cua.escalation.handoff import HandoffController
+from cua.escalation.intervention import InterventionRequest, raise_intervention
+from cua.escalation.operator_mock import prompt_operator
 from cua.obslog.logger import RunLogger
 from cua.safety.allowlist import Allowlist
 from cua.safety.redact import is_sensitive_field, redact
@@ -26,6 +29,12 @@ EVIDENCE_ROOT = Path(__file__).resolve().parents[3] / "evidence"
 class StoppingConditions:
     max_steps: int = 25
     timeout_s: int = 300
+    # A dead-end guard alongside max_steps/timeout: escalating repeatedly for
+    # the SAME unresolved condition (found running this live — a genuinely
+    # unsupported action gets re-escalated every turn forever, since nothing
+    # about the page changes between asks) is its own kind of stuck. Past
+    # this many escalations in one run, stop asking and terminate instead.
+    max_escalations: int = 1
 
 
 @dataclass
@@ -164,11 +173,15 @@ class AgentLoop:
         decider: LLMDecider,
         allowlist: Allowlist,
         stopping: StoppingConditions = StoppingConditions(),
+        escalate_on_stuck: bool = True,
     ) -> None:
         self.surface = surface
         self.decider = decider
         self.allowlist = allowlist
         self.stopping = stopping
+        # False only for non-interactive callers (tests) — the real system
+        # is meant to hand off to a human rather than just terminate.
+        self.escalate_on_stuck = escalate_on_stuck
 
     def run(
         self, goal: str, entry_url: str, credentials: dict[str, str] | None = None
@@ -189,6 +202,7 @@ class AgentLoop:
         transcript: list[dict] = []
         succeeded = False
         stuck_reason: str | None = None
+        escalation_count = 0
         started_at = time.monotonic()
 
         self.surface.start(entry_url)
@@ -238,14 +252,35 @@ class AgentLoop:
                     break
 
                 if action.kind == "stuck":
-                    stuck_reason = action.reason
                     screenshot = str(evidence_dir / f"stuck-step{step_num}.png")
                     try:
                         self.surface.screenshot(screenshot)
                     except Exception:
                         screenshot = None
                     logger.log("stuck", step=step_num, reason=action.reason, screenshot=screenshot)
-                    break
+
+                    if not self.escalate_on_stuck or escalation_count >= self.stopping.max_escalations:
+                        stuck_reason = action.reason
+                        break
+
+                    escalation_count += 1
+                    request = InterventionRequest(
+                        run_id=run_id,
+                        capability_id=None,
+                        goal=goal,
+                        current_step_id=f"discovery-step-{step_num}",
+                        reason=action.reason,
+                        screenshot_path=screenshot,
+                        url=self.surface.current_url(),
+                    )
+                    raise_intervention(request, evidence_dir)
+                    handoff = HandoffController(self.surface)
+                    prompt_operator(request, handoff, logger=logger)
+                    history_lines.append(
+                        f"{step_num + 1}. stuck({action.reason!r}) -> human took over and handed "
+                        f"control back: {handoff.human_actions_log[-1]['diff_summary']}"
+                    )
+                    continue
 
                 if not self.allowlist.permits_action(action.kind):
                     logger.log("allowlist_rejected", step=step_num, action=action.kind)
