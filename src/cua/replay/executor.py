@@ -118,23 +118,28 @@ class ReplayExecutor:
                 expected="entry_url within allowlist", observed=capability.entry_url,
             )
 
-        try:
-            self.surface.start(capability.entry_url)
-        except Exception as exc:
-            # A dead/unreachable target — the "outright app errors / transient
-            # failure" bucket, not a business outcome. There is nothing to
-            # trace here (the browser context may not exist), so evidence is
-            # just this log line.
-            logger.log("entry_navigation_failed", error=str(exc))
-            return self._failure(
-                capability, evidence_dir, failed_step_id="entry",
-                expected="target reachable", observed=str(exc),
-            )
-
         recovered_steps: list[str] = []
         resolved_via: dict[str, str] = {}
 
         try:
+            try:
+                self.surface.start(capability.entry_url)
+            except Exception as exc:
+                # A dead/unreachable target — the "outright app errors /
+                # transient failure" bucket, not a business outcome. This
+                # `return` still runs the `finally` below: browser.start()
+                # can fail after the context (and tracing) already exist
+                # (e.g. context created, then page.goto() fails) — an
+                # earlier version returned straight out of this except
+                # block, skipping surface.stop() entirely and leaking the
+                # browser process. Nesting inside the outer try/finally
+                # fixes that; found by actually triggering this path.
+                logger.log("entry_navigation_failed", error=str(exc))
+                return self._failure(
+                    capability, evidence_dir, failed_step_id="entry",
+                    expected="target reachable", observed=str(exc),
+                )
+
             for step in capability.steps:
                 if not self.allowlist.permits_action(step.action.value):
                     logger.log("allowlist_rejected", step=step.id, action=step.action.value)
