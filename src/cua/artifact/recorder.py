@@ -111,6 +111,27 @@ class ArtifactRecorder:
                 )
             )
 
+        # --- Hand-specified rewrite of the login-submit step ----------------
+        # Give it a checkpoint so replay can tell "credentials rejected"
+        # (a legitimate business outcome ParaBank reports with a specific
+        # banner) apart from a hard failure — without this, a bad password
+        # at replay time would just silently stay on the login page and
+        # fail confusingly at a much later step instead.
+        for i, step in enumerate(steps):
+            if step.action == ActionType.CLICK and step.locator and step.locator.description == "Log In":
+                steps[i] = Step(
+                    id=step.id,
+                    action=ActionType.CLICK,
+                    locator=step.locator,
+                    risk=RiskLevel.SAFE,
+                    on_failure="business_outcome",
+                    business_outcome_code="login_failed",
+                    checkpoint=Checkpoint(
+                        description="Left the login page for Accounts Overview",
+                        expected_text_contains="Accounts Overview",
+                    ),
+                )
+
         # --- Hand-specified rewrite of the account-selection step ----------
         # Replace whatever literal account-number click the transcript
         # recorded with a structural locator that generalizes across

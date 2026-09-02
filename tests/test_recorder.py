@@ -102,6 +102,17 @@ def test_declares_typed_array_output_and_count():
     assert names["match_count"].type == "int"
 
 
+def test_login_step_gets_a_business_outcome_checkpoint():
+    cap = ArtifactRecorder().record(_run_result(), target_app="parabank")
+    login_steps = [s for s in cap.steps if s.locator and s.locator.description == "Log In"]
+    assert len(login_steps) == 1
+    step = login_steps[0]
+    assert step.on_failure == "business_outcome"
+    assert step.business_outcome_code == "login_failed"
+    assert step.checkpoint is not None
+    assert step.checkpoint.expected_text_contains == "Accounts Overview"
+
+
 def test_raises_on_a_failed_run():
     failed = RunResult(
         run_id="discovery-test0002",

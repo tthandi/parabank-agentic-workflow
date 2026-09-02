@@ -8,6 +8,7 @@ operator without spinning up a second session — see escalation/handoff.py.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
@@ -66,10 +67,20 @@ class BrowserSurface:
             visible_text_excerpt=text[:2000],
         )
 
-    def resolve_strategy(self, strategy: LocatorStrategy):
+    def resolve_strategy(self, strategy: LocatorStrategy, wait_ms: int = 3000):
         """Resolve a single strategy. Returns a Playwright Locator iff it
         matches exactly one element; None otherwise (no match, or ambiguous —
-        treated the same, since acting on an ambiguous match is not safe)."""
+        treated the same, since acting on an ambiguous match is not safe).
+
+        Polls up to `wait_ms` rather than checking once: `Locator.count()`
+        does not auto-wait the way `.click()`/`.fill()` do, and this app
+        populates some tables (e.g. Accounts Overview) via an async AJAX
+        call after the surrounding page has already rendered — a single
+        immediate count() can genuinely observe 0 rows before the fetch
+        resolves. Found by replaying live: the checkpoint after login
+        matches on heading text that appears before the table does, so the
+        very next step raced the fetch and failed with count()==0.
+        """
         assert self.page is not None
         scope = self.page
         for frame_selector in strategy.frame_path:
@@ -91,11 +102,16 @@ class BrowserSurface:
         else:
             return None
 
-        try:
-            if loc.count() == 1:
-                return loc
-        except Exception:
-            return None
+        deadline = time.monotonic() + wait_ms / 1000
+        while True:
+            try:
+                if loc.count() == 1:
+                    return loc
+            except Exception:
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.1)
         return None
 
     def resolve(self, locator: Locator) -> ResolvedLocator | None:

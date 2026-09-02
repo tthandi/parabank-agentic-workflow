@@ -1,0 +1,2 @@
+{"ts": "2026-09-02T07:51:22.751682+00:00", "run_id": "replay-35800bb1ee", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.1.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-02T07:51:28.934711+00:00", "run_id": "replay-35800bb1ee", "event_type": "business_outcome", "step": "step-3-click", "code": "login_failed"}

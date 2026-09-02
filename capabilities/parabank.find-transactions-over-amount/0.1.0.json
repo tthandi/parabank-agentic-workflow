@@ -113,10 +113,15 @@
       "value_param": null,
       "value_literal": null,
       "risk": "safe",
-      "checkpoint": null,
-      "on_failure": "hard_fail",
+      "checkpoint": {
+        "description": "Left the login page for Accounts Overview",
+        "locator": null,
+        "expected_text_contains": "Accounts Overview",
+        "timeout_ms": 5000
+      },
+      "on_failure": "business_outcome",
       "retry": null,
-      "business_outcome_code": null
+      "business_outcome_code": "login_failed"
     },
     {
       "id": "step-4-click",
@@ -172,6 +177,6 @@
     "expected_text_contains": "Account Activity",
     "timeout_ms": 5000
   },
-  "created_from_run_id": "discovery-0baa93b52b",
-  "created_at": "2026-09-02T07:38:19.022882+00:00"
+  "created_from_run_id": "discovery-604447c332",
+  "created_at": "2026-09-02T07:48:38.820448+00:00"
 }
