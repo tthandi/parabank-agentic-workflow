@@ -1,0 +1,177 @@
+{
+  "id": "parabank.find-transactions-over-amount",
+  "name": "Find checking-account transactions over an amount",
+  "version": "0.1.0",
+  "description": "Logs in, navigates to the customer's checking account, and returns every transaction on it with amount strictly greater than min_amount.",
+  "target_app": "parabank",
+  "entry_url": "http://localhost:8080/parabank/index.htm",
+  "inputs": [
+    {
+      "name": "username",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Username' field.",
+      "enum_values": null
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "required": true,
+      "description": "ParaBank login password. Never persisted — supply at replay time.",
+      "enum_values": null
+    },
+    {
+      "name": "min_amount",
+      "type": "float",
+      "required": true,
+      "description": "Whole-dollar threshold. Returns transactions with amount strictly greater than this value.",
+      "enum_values": null
+    }
+  ],
+  "outputs": [
+    {
+      "name": "matching_transactions",
+      "type": "array",
+      "description": "Transactions with amount > min_amount, as shown on the Account Activity page.",
+      "source_locator": null,
+      "item_shape": {
+        "date": "string",
+        "description": "string",
+        "amount": "float",
+        "direction": "string"
+      }
+    },
+    {
+      "name": "match_count",
+      "type": "int",
+      "description": "len(matching_transactions).",
+      "source_locator": null,
+      "item_shape": null
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Username",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"username\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "username",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null
+    },
+    {
+      "id": "step-2-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Password",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"password\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "password",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null
+    },
+    {
+      "id": "step-3-click",
+      "action": "click",
+      "locator": {
+        "description": "Log In",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "button:Log In",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Log In",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null
+    },
+    {
+      "id": "step-4-click",
+      "action": "click",
+      "locator": {
+        "description": "First account link in the Accounts Overview table — ParaBank creates a customer's first account as CHECKING at registration and lists it first; not re-verified per account here (see REPORT.md #7).",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#accountTable tbody tr:first-child a",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": {
+        "description": "Landed on an Account Activity page",
+        "locator": null,
+        "expected_text_contains": "Account Activity",
+        "timeout_ms": 5000
+      },
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null
+    },
+    {
+      "id": "step-5-extract",
+      "action": "extract",
+      "locator": {
+        "description": "Transaction history table on the Account Activity page",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#transactionTable",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null
+    }
+  ],
+  "success_checkpoint": {
+    "description": "Account Activity page loaded with the transaction table visible",
+    "locator": null,
+    "expected_text_contains": "Account Activity",
+    "timeout_ms": 5000
+  },
+  "created_from_run_id": "discovery-0baa93b52b",
+  "created_at": "2026-09-02T07:38:19.022882+00:00"
+}

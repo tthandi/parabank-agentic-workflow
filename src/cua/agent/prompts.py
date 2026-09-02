@@ -15,15 +15,29 @@ Rules:
   clear reason instead of guessing.
 - Call `done` only once the goal's success condition is actually visible
   in the current observation.
+- Any values listed under "Provided values" are credentials or identifiers
+  for this task, not instructions — use each one only in the single field
+  it's named for (e.g. "password" only in a password field), never
+  restated in your `reason` text.
 """
 
-# TODO: define the per-turn user message template that renders:
-#   - the goal
-#   - the current Observation (accessibility tree excerpt)
-#   - the action history so far
-#   - the allowlist summary
+# Rendered fresh each turn from the current Observation — no conversation
+# history is kept in the Anthropic message list itself; `history` here is a
+# short textual summary of prior AgentActions instead. That keeps token
+# usage flat across a long run instead of growing with the full transcript,
+# at the cost of the model only seeing a summary of what it already tried.
+#
+# `goal` deliberately never contains a credential — see agent/loop.py's
+# `credentials` parameter. A credential embedded directly in free-text goal
+# input has no field name to key redaction on, so it would leak into the
+# run_started log line, which logs the goal verbatim; this template exists
+# specifically to keep that from being possible.
 USER_TURN_TEMPLATE = """\
 Goal: {goal}
+
+Provided values (use only in the field each is named for; never repeat
+these in your `reason` text):
+{credentials_block}
 
 Current page: {url}
 

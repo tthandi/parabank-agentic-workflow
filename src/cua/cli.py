@@ -9,22 +9,84 @@ See README.md for the full demo path.
 from __future__ import annotations
 
 import json
+import os
 
 import click
+from dotenv import load_dotenv
+
+from cua.agent.llm import LLMDecider
+from cua.agent.loop import AgentLoop, StoppingConditions
+from cua.artifact.recorder import ArtifactRecorder
+from cua.artifact.store import ArtifactStore
+from cua.safety.allowlist import Allowlist
+from cua.surface.browser import BrowserSurface
+
+_TARGET_ENTRY_URLS = {
+    "parabank": "/index.htm",
+}
+
+
+def _entry_url(target: str) -> str:
+    base = os.environ.get("PARABANK_BASE_URL", "http://localhost:8080/parabank")
+    if target not in _TARGET_ENTRY_URLS:
+        raise click.ClickException(f"Unknown target '{target}'. Known: {list(_TARGET_ENTRY_URLS)}")
+    return base.rstrip("/") + _TARGET_ENTRY_URLS[target]
+
+
+def _allowlist() -> Allowlist:
+    path = os.environ.get("CUA_ALLOWLIST_PATH", "config/allowlist.yaml")
+    return Allowlist.from_yaml(path)
+
+
+def _headless() -> bool:
+    return os.environ.get("CUA_HEADLESS", "false").lower() == "true"
 
 
 @click.group()
 def main() -> None:
-    pass
+    load_dotenv()
 
 
 @main.command()
-@click.option("--goal", required=True, help="Natural-language goal for the agent.")
+@click.option("--goal", required=True, help="Natural-language goal for the agent. Must not contain credentials.")
 @click.option("--target", required=True, help="Target app key, e.g. 'parabank'.")
-def run(goal: str, target: str) -> None:
-    """Run the LLM-driven discovery agent against a live target and save the resulting capability."""
-    # TODO: wire up BrowserSurface, LLMDecider, Allowlist, AgentLoop, ArtifactRecorder, ArtifactStore.
-    raise NotImplementedError
+@click.option("--username", default=None, help="Login username, if the goal requires one.")
+@click.option(
+    "--password",
+    default=None,
+    envvar="CUA_PASSWORD",
+    help="Login password. Prefer the CUA_PASSWORD env var over this flag to keep it out of shell history.",
+)
+@click.option("--max-steps", default=25, show_default=True)
+def run(goal: str, target: str, username: str | None, password: str | None, max_steps: int) -> None:
+    """Run the LLM-driven discovery agent against a live target and save the resulting capability.
+
+    Credentials travel out-of-band from `goal` (see agent/prompts.py) — the
+    goal text is what gets logged verbatim to evidence/, so it must never
+    contain a username/password itself.
+    """
+    entry_url = _entry_url(target)
+    credentials = {k: v for k, v in {"username": username, "password": password}.items() if v}
+    surface = BrowserSurface(headless=_headless())
+    loop = AgentLoop(
+        surface=surface,
+        decider=LLMDecider(),
+        allowlist=_allowlist(),
+        stopping=StoppingConditions(max_steps=max_steps),
+    )
+
+    click.echo(f"Discovery run starting: goal={goal!r} target={target} entry_url={entry_url}")
+    result = loop.run(goal, entry_url, credentials=credentials or None)
+    click.echo(f"Run finished: succeeded={result.succeeded} run_id={result.run_id}")
+    click.echo(f"Evidence: {result.evidence_dir}")
+
+    if not result.succeeded:
+        click.echo(f"Stuck/failed: {result.stuck_reason}")
+        raise SystemExit(1)
+
+    capability = ArtifactRecorder().record(result, target_app=target)
+    path = ArtifactStore().save(capability)
+    click.echo(f"Capability saved: {capability.id} v{capability.version} -> {path}")
 
 
 @main.command()
@@ -33,9 +95,17 @@ def run(goal: str, target: str) -> None:
 @click.option("--params", default="{}", help="JSON-encoded input params.")
 def replay(capability: str, version: str, params: str) -> None:
     """Deterministically replay a saved capability artifact — no LLM in the loop."""
+    from cua.replay.executor import ReplayExecutor
+
     parsed = json.loads(params)
-    # TODO: wire up BrowserSurface, Allowlist, ArtifactStore.load, ReplayExecutor.
-    raise NotImplementedError
+    cap = ArtifactStore().load(capability, version)
+    surface = BrowserSurface(headless=_headless())
+    executor = ReplayExecutor(surface=surface, allowlist=_allowlist())
+
+    result = executor.run(cap, parsed)
+    click.echo(result.model_dump_json(indent=2))
+    if result.kind.value == "failure":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

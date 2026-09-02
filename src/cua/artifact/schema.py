@@ -89,11 +89,17 @@ class Step(BaseModel):
     value_literal: str | None = None
     risk: RiskLevel = RiskLevel.SAFE
     checkpoint: Checkpoint | None = None
-    # What a failure of *this step* means for the overall replay result.
+    # What it means when this step's CHECKPOINT doesn't match after a
+    # successful action — not what it means when the action itself can't
+    # resolve/click/fill. A locator that resolves to nothing is always a
+    # hard failure (the surface itself is broken); on_failure instead
+    # governs the case where the click/fill worked but the app answered
+    # with something other than the expected next state:
     # - hard_fail: stop the run, surface a debuggable failure (replay/outcomes.py)
     # - retry: transient condition, apply `retry` policy before giving up
-    # - business_outcome: a known non-happy-path result (e.g. "not found" banner) —
-    #   report it to the caller as a legitimate outcome, not a crash
+    # - business_outcome: a known non-happy-path result (e.g. "invalid
+    #   credentials" banner) — report it to the caller as a legitimate
+    #   outcome, not a crash
     on_failure: Literal["hard_fail", "retry", "business_outcome"] = "hard_fail"
     retry: RetryPolicy | None = None
     business_outcome_code: str | None = None  # required when on_failure == business_outcome
@@ -101,7 +107,7 @@ class Step(BaseModel):
 
 class ParamSpec(BaseModel):
     name: str
-    type: Literal["string", "int", "enum"]
+    type: Literal["string", "int", "float", "enum"]
     required: bool = True
     description: str = ""
     enum_values: list[str] | None = None
@@ -109,9 +115,15 @@ class ParamSpec(BaseModel):
 
 class OutputSpec(BaseModel):
     name: str
-    type: Literal["string", "int", "float", "bool"]
+    type: Literal["string", "int", "float", "bool", "array"]
     description: str = ""
     source_locator: Locator | None = None  # where to read this value from on success
+    # For type == "array": the shape of each item, field name -> scalar type
+    # (e.g. {"date": "string", "amount": "float"}). A capability whose
+    # natural output is a filtered row set (this project's find-transactions
+    # capability) doesn't fit a bare scalar — added after that was the first
+    # real capability recorded, not designed in up front.
+    item_shape: dict[str, str] | None = None
 
 
 class Capability(BaseModel):

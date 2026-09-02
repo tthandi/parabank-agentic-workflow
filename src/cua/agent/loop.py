@@ -1,16 +1,25 @@
 """The discovery-run observe -> decide -> act loop (core requirement 3.1).
 
 Produces the transcript that artifact/recorder.py distills into a Capability,
-and can escalate mid-run via escalation/intervention.py when stuck.
+and escalates mid-run (via escalation/intervention.py) when stuck.
 """
 
 from __future__ import annotations
 
+import re
+import time
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from cua.agent.llm import AgentAction, LLMDecider
+from cua.artifact.schema import Locator, LocatorStrategy
+from cua.obslog.logger import RunLogger
 from cua.safety.allowlist import Allowlist
+from cua.safety.redact import is_sensitive_field, redact
 from cua.surface.browser import BrowserSurface
+
+EVIDENCE_ROOT = Path(__file__).resolve().parents[3] / "evidence"
 
 
 @dataclass
@@ -23,9 +32,129 @@ class StoppingConditions:
 class RunResult:
     run_id: str
     goal: str
+    entry_url: str
     succeeded: bool
     transcript: list[dict] = field(default_factory=list)
     stuck_reason: str | None = None
+    evidence_dir: str = ""
+
+
+_ROLE_BY_TAG = {"a": "link", "button": "button", "select": "combobox"}
+_INPUT_TYPE_ROLE = {"submit": "button", "button": "button", "checkbox": "checkbox"}
+
+
+def _infer_role(tag: str, input_type: str | None) -> str | None:
+    if tag == "input":
+        return _INPUT_TYPE_ROLE.get(input_type or "", "textbox")
+    return _ROLE_BY_TAG.get(tag)
+
+
+def _harvest_strategies(element) -> list[LocatorStrategy]:
+    """Given a resolved Playwright Locator (exactly one match), derive ranked
+    LocatorStrategy candidates FROM the element's actual properties — not
+    from whatever guess happened to find it. This is what keeps the recorded
+    artifact from just encoding the LLM's phrasing."""
+    props = element.evaluate(
+        "el => ({tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), "
+        "id: el.id || null, name: el.getAttribute('name'), "
+        "text: (el.innerText || el.value || '').trim().slice(0, 80)})"
+    )
+    strategies: list[LocatorStrategy] = []
+    role = _infer_role(props["tag"], props.get("type"))
+
+    if role in ("button", "link") and props.get("text"):
+        strategies.append(LocatorStrategy(kind="role", value=f"{role}:{props['text']}"))
+    if props.get("text"):
+        strategies.append(LocatorStrategy(kind="text", value=props["text"]))
+    if props.get("name"):
+        strategies.append(LocatorStrategy(kind="css", value=f"{props['tag']}[name=\"{props['name']}\"]"))
+    if props.get("id"):
+        strategies.append(LocatorStrategy(kind="css", value=f"#{props['id']}"))
+
+    return strategies or [LocatorStrategy(kind="css", value=props["tag"])]
+
+
+_FILLABLE_TAGS = {"input", "textarea", "select"}
+
+
+def _acceptable(loc, action_kind: str) -> bool:
+    """Reject a resolved candidate that can't actually take the intended
+    action — e.g. get_by_text("Username", exact=True) legitimately resolves
+    to exactly one element, but it's the <b>Username</b> label, not the
+    <input> next to it, and a `fill` there is a false positive, not a match."""
+    if action_kind not in ("fill", "select"):
+        return True
+    try:
+        tag = loc.evaluate("el => el.tagName.toLowerCase()")
+    except Exception:
+        return False
+    return tag in _FILLABLE_TAGS
+
+
+_SUFFIX_WORDS = re.compile(
+    r"\s+(field|box|textbox|input|button|link|dropdown|control|element)s?$", re.IGNORECASE
+)
+
+
+def _cascade(page, description: str, action_kind: str):
+    for role in ("button", "link", "textbox", "combobox", "checkbox"):
+        try:
+            loc = page.get_by_role(role, name=description)
+            if loc.count() == 1 and _acceptable(loc, action_kind):
+                return loc, _harvest_strategies(loc)
+        except Exception:
+            pass
+
+    for finder in (
+        lambda d: page.get_by_label(d),
+        lambda d: page.get_by_placeholder(d),
+        lambda d: page.get_by_text(d, exact=True),
+        lambda d: page.get_by_text(d, exact=False),
+    ):
+        try:
+            loc = finder(description)
+            if loc.count() == 1 and _acceptable(loc, action_kind):
+                return loc, _harvest_strategies(loc)
+        except Exception:
+            continue
+
+    # Legacy fallback: the nearest <input> after a label-shaped text node.
+    try:
+        loc = page.get_by_text(description, exact=False).locator("xpath=following::input[1]")
+        if loc.count() == 1 and _acceptable(loc, action_kind):
+            return loc, _harvest_strategies(loc)
+    except Exception:
+        pass
+
+    return None, []
+
+
+def resolve_natural_target(page, description: str, action_kind: str = "click"):
+    """Turn a natural-language target description into a resolved Playwright
+    element plus ranked LocatorStrategy candidates, via a cascade of
+    heuristic finders. Returns (element, strategies) or (None, []).
+
+    This app has no test IDs and most form fields have no accessible name at
+    all (a <p><b>Username</b></p> next to a bare <input>, not a <label
+    for=...>) — the last cascade step exists specifically for that pattern
+    and is exactly the "no clean DOM" case the brief centers on.
+
+    The model is instructed to pass exact visible text (see agent/llm.py's
+    tool description), but real models don't always comply — "Username
+    field" instead of "Username" is a real failure mode observed in
+    practice. Defense in depth: if the raw description doesn't resolve,
+    strip a trailing generic noun ("field"/"box"/"textbox"/...) and retry
+    once before giving up.
+    """
+    element, strategies = _cascade(page, description, action_kind)
+    if element is not None:
+        return element, strategies
+
+    stripped = _SUFFIX_WORDS.sub("", description).strip()
+    if stripped and stripped != description:
+        return _cascade(page, stripped, action_kind)
+
+    return None, []
 
 
 class AgentLoop:
@@ -41,16 +170,168 @@ class AgentLoop:
         self.allowlist = allowlist
         self.stopping = stopping
 
-    def run(self, goal: str, entry_url: str) -> RunResult:
-        """TODO:
-        - self.surface.start(entry_url)
-        - loop: observe -> decider.decide -> check allowlist/policy -> act
-          -> log each turn (obslog) -> check goal/stopping conditions
-        - on AgentAction(kind="stuck"): raise an intervention request
-          (escalation/intervention.py) instead of failing silently
-        - on success: return RunResult with the full transcript for
-          artifact/recorder.py to consume
-        - always self.surface.stop(save_trace_to=...) so evidence/ gets a
-          trace even on failure
-        """
-        raise NotImplementedError
+    def run(
+        self, goal: str, entry_url: str, credentials: dict[str, str] | None = None
+    ) -> RunResult:
+        """`credentials` (e.g. {"username": ..., "password": ...}) travels to
+        the model out-of-band from `goal` and is never written to the log —
+        `goal` itself must never contain a credential (see prompts.py)."""
+        run_id = f"discovery-{uuid.uuid4().hex[:10]}"
+        evidence_dir = EVIDENCE_ROOT / run_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        logger = RunLogger(run_id, evidence_dir)
+
+        # Lines of "what I tried and what happened" fed back to the model
+        # each turn — NOT a list of AgentActions. A failed resolution has to
+        # be visible here or the model has no signal that its last guess
+        # didn't do anything, and will happily repeat it until max_steps.
+        history_lines: list[str] = []
+        transcript: list[dict] = []
+        succeeded = False
+        stuck_reason: str | None = None
+        started_at = time.monotonic()
+
+        self.surface.start(entry_url)
+        logger.log(
+            "run_started",
+            goal=goal,
+            entry_url=entry_url,
+            credential_fields=sorted((credentials or {}).keys()),
+        )
+        try:
+            for step_num in range(self.stopping.max_steps):
+                if time.monotonic() - started_at > self.stopping.timeout_s:
+                    stuck_reason = "timeout"
+                    logger.log("stopping_condition", condition="timeout")
+                    break
+
+                observation = self.surface.observe()
+                action = self.decider.decide(goal, observation, history_lines, credentials)
+                logged_value = (
+                    "[REDACTED]"
+                    if is_sensitive_field(action.target_description)
+                    else action.value
+                )
+                logger.log(
+                    "decision",
+                    step=step_num,
+                    url=observation.url,
+                    action=action.kind,
+                    target=action.target_description,
+                    value=logged_value,
+                    reason=action.reason,
+                )
+                target_repr = (
+                    action.target_description or action.value or action.expected_text_contains or ""
+                )
+
+                if action.kind == "done":
+                    succeeded = True
+                    transcript.append(
+                        {
+                            "index": step_num,
+                            "action": action.__dict__,
+                            "url_before": observation.url,
+                            "url_after": observation.url,
+                        }
+                    )
+                    break
+
+                if action.kind == "stuck":
+                    stuck_reason = action.reason
+                    screenshot = str(evidence_dir / f"stuck-step{step_num}.png")
+                    try:
+                        self.surface.screenshot(screenshot)
+                    except Exception:
+                        screenshot = None
+                    logger.log("stuck", step=step_num, reason=action.reason, screenshot=screenshot)
+                    break
+
+                if not self.allowlist.permits_action(action.kind):
+                    logger.log("allowlist_rejected", step=step_num, action=action.kind)
+                    stuck_reason = f"allowlist rejected action type '{action.kind}'"
+                    break
+
+                url_before = observation.url
+                entry = self._act(action, step_num, observation, logger)
+                transcript.append(entry)
+
+                if entry.get("resolution_failed"):
+                    outcome = "FAILED — no element resolved for that exact description"
+                elif entry.get("assert_passed") is False:
+                    outcome = "FAILED — expected text not found on the page"
+                else:
+                    outcome = "ok"
+                history_lines.append(f"{step_num + 1}. {action.kind}({target_repr!r}) -> {outcome}")
+
+                url_after = self.surface.current_url()
+                if not self.allowlist.permits_url(url_after):
+                    logger.log("allowlist_rejected", step=step_num, url=url_after)
+                    stuck_reason = f"navigated outside allowlist to {url_after}"
+                    break
+                entry["url_before"] = url_before
+                entry["url_after"] = url_after
+            else:
+                stuck_reason = "max_steps exceeded"
+                logger.log("stopping_condition", condition="max_steps")
+        finally:
+            self.surface.stop(save_trace_to=str(evidence_dir / "trace.zip"))
+
+        logger.log("run_finished", succeeded=succeeded, stuck_reason=stuck_reason)
+        return RunResult(
+            run_id=run_id,
+            goal=goal,
+            entry_url=entry_url,
+            succeeded=succeeded,
+            transcript=transcript,
+            stuck_reason=stuck_reason,
+            evidence_dir=str(evidence_dir),
+        )
+
+    def _act(self, action: AgentAction, step_num: int, observation, logger: RunLogger) -> dict:
+        entry: dict = {"index": step_num, "action": action.__dict__}
+
+        if action.kind == "navigate":
+            self.surface.page.goto(action.value)
+            entry["locator"] = None
+            return entry
+
+        if action.kind == "wait_for":
+            self.surface.page.get_by_text(action.target_description, exact=False).first.wait_for(
+                timeout=5000
+            )
+            entry["locator"] = None
+            return entry
+
+        if action.kind == "extract":
+            entry["locator"] = None
+            entry["extracted_excerpt"] = redact(observation.visible_text_excerpt[:500])
+            return entry
+
+        if action.kind == "assert":
+            ok = action.expected_text_contains in observation.visible_text_excerpt
+            entry["assert_passed"] = ok
+            entry["locator"] = None
+            logger.log("assert", step=step_num, passed=ok, expected=action.expected_text_contains)
+            return entry
+
+        element, strategies = resolve_natural_target(
+            self.surface.page, action.target_description, action_kind=action.kind
+        )
+        if element is None:
+            logger.log("target_unresolved", step=step_num, target=action.target_description)
+            entry["locator"] = None
+            entry["resolution_failed"] = True
+            return entry
+
+        locator = Locator(description=action.target_description, strategies=strategies)
+        entry["locator"] = locator.model_dump()
+
+        if action.kind == "click":
+            element.click()
+        elif action.kind == "fill":
+            element.fill(action.value)
+        elif action.kind == "select":
+            element.select_option(label=action.value)
+
+        return entry

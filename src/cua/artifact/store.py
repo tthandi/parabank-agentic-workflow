@@ -5,7 +5,6 @@ Layout convention: capabilities/<capability_id>/<version>.json
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from cua.artifact.schema import Capability
@@ -29,5 +28,13 @@ class ArtifactStore:
         return Capability.model_validate_json(path.read_text())
 
     def latest_version(self, capability_id: str) -> str:
-        """TODO: pick the newest semver under capabilities/<capability_id>/."""
-        raise NotImplementedError
+        cap_dir = self.root / capability_id
+        versions = [p.stem for p in cap_dir.glob("*.json")] if cap_dir.is_dir() else []
+        if not versions:
+            raise FileNotFoundError(f"no saved versions for capability '{capability_id}'")
+
+        def _key(v: str) -> tuple[int, int, int]:
+            parts = v.split(".")
+            return tuple(int(p) for p in parts[:3]) if len(parts) == 3 else (0, 0, 0)
+
+        return max(versions, key=_key)
