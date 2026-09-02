@@ -15,3 +15,11 @@ playwright-report/
 
 # Never commit real credentials or raw traces that might carry cookies/tokens.
 *.har
+
+# Machine-specific: which account/customer ids a local ParaBank instance
+# actually got assigned. fixtures/personas.yaml (the intent) is committed;
+# this (the outcome) is not.
+fixtures/seeded.json
+
+# The employer's assignment brief — reference material, not project source.
+Assignment*.pdf

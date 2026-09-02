@@ -6,7 +6,9 @@
 target_app: parabank
 
 allowed_domains:
-  - parabank.parasoft.com
+  - parabank.parasoft.com   # keep: the public instance stays a valid target
+  - localhost
+  - 127.0.0.1
 
 # Prefix match against the URL path. "*" suffix is stripped before matching.
 allowed_routes:

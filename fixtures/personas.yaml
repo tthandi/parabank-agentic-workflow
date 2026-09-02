@@ -1,0 +1,56 @@
+defaults:
+  password: Fixture!23
+  address: { street: "1 Sandbox Way", city: "Testville", state: "CA", zipCode: "90210" }
+
+personas:
+  # No persona deposits its own "headroom" — registration already funds
+  # checking with the INITIAL_BALANCE app parameter (500.00, set below),
+  # and that opening balance does not itself create a transaction row.
+  # Opening a savings account debits a fixed $100.00 "Funds Transfer Sent"
+  # from checking, which lands exactly on (not over) the $100 threshold
+  # find-transactions.py filters on, so it never perturbs over_100 counts.
+  # This keeps over_100 equal to a simple count over the explicit
+  # `transactions` list below, which is what makes it possible to hand-pick
+  # each persona's number.
+  - username: alice_h
+    firstName: Alice
+    lastName: Happy
+    ssn: "111-22-3333"
+    phoneNumber: "555-0100"
+    register: true
+    savings: true
+    transactions:                 # amount, kind
+      - [250.00, deposit]
+      - [480.50, deposit]
+      - [125.00, withdraw]
+      - [999.99, deposit]
+      - [40.00, withdraw]
+      - [12.75, withdraw]
+      - [75.00, deposit]
+      - [9.99, withdraw]
+    expect: { over_100: 4 }
+
+  - username: bob_thin
+    firstName: Bob
+    lastName: Thin
+    ssn: "222-33-4444"
+    phoneNumber: "555-0101"
+    register: true
+    savings: false
+    transactions: [[20.00, deposit], [15.50, withdraw], [8.00, deposit]]
+    expect: { over_100: 0 }       # drives no_matching_transactions
+
+  - username: carol_low
+    firstName: Carol
+    lastName: Low
+    ssn: "333-44-5555"
+    phoneNumber: "555-0102"
+    register: true
+    savings: true
+    drain_savings_below_minimum: true   # drives validation_error
+    transactions: [[60.00, withdraw]]
+    expect: { over_100: 0 }
+
+  - username: dave_ghost           # deliberately never registered
+    register: false
+    expect: { login: customer_not_found }
