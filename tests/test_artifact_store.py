@@ -1,5 +1,7 @@
+import pytest
+
 from cua.artifact.schema import Capability, Checkpoint
-from cua.artifact.store import ArtifactStore
+from cua.artifact.store import ArtifactStore, VersionExistsError
 
 
 def _cap(version: str) -> Capability:
@@ -38,3 +40,19 @@ def test_latest_version_raises_for_unknown_capability(tmp_path):
         assert False, "expected FileNotFoundError"
     except FileNotFoundError:
         pass
+
+
+def test_save_refuses_to_silently_overwrite_an_existing_version(tmp_path):
+    store = ArtifactStore(root=tmp_path)
+    store.save(_cap("0.1.0"))
+    with pytest.raises(VersionExistsError):
+        store.save(_cap("0.1.0"))
+
+
+def test_save_force_true_does_overwrite(tmp_path):
+    store = ArtifactStore(root=tmp_path)
+    store.save(_cap("0.1.0"))
+    # Would raise without force=True (see test above) — force is the
+    # deliberate, explicit escape hatch.
+    path = store.save(_cap("0.1.0"), force=True)
+    assert path.exists()

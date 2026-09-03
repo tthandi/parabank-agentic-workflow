@@ -59,27 +59,66 @@ def _infer_role(tag: str, input_type: str | None) -> str | None:
     return _ROLE_BY_TAG.get(tag)
 
 
+_HARVEST_JS = """el => {
+    const byFor = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+    const wrapping = el.closest('label');
+    const labelText = (byFor || wrapping) ? (byFor || wrapping).innerText.trim() : null;
+    const siblings = el.parentElement
+        ? Array.from(el.parentElement.children).filter(c => c.tagName === el.tagName)
+        : [];
+    return {
+        tag: el.tagName.toLowerCase(),
+        type: el.getAttribute('type'),
+        id: el.id || null,
+        name: el.getAttribute('name'),
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label'),
+        labelText: labelText,
+        text: (el.innerText || el.value || '').trim().slice(0, 80),
+        nthOfType: siblings.length > 1 ? siblings.indexOf(el) + 1 : null,
+    };
+}"""
+
+
 def _harvest_strategies(element) -> list[LocatorStrategy]:
     """Given a resolved Playwright Locator (exactly one match), derive ranked
     LocatorStrategy candidates FROM the element's actual properties — not
     from whatever guess happened to find it. This is what keeps the recorded
-    artifact from just encoding the LLM's phrasing."""
-    props = element.evaluate(
-        "el => ({tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), "
-        "id: el.id || null, name: el.getAttribute('name'), "
-        "text: (el.innerText || el.value || '').trim().slice(0, 80)})"
-    )
+    artifact from just encoding the LLM's phrasing.
+
+    Ranked semantic -> structural, each only added if the DOM actually
+    supports it: a real <label>/aria-label, then visible text, then
+    name/id-attribute CSS, then (last resort, most brittle) a positional
+    CSS selector among same-tag siblings — something to fall back to even
+    when an element has no distinguishing attribute at all, which ParaBank's
+    unlabeled inputs are a real example of.
+    """
+    props = element.evaluate(_HARVEST_JS)
     strategies: list[LocatorStrategy] = []
     role = _infer_role(props["tag"], props.get("type"))
+    label = props.get("labelText") or props.get("ariaLabel")
 
-    if role in ("button", "link") and props.get("text"):
+    if role and label:
+        strategies.append(LocatorStrategy(kind="role", value=f"{role}:{label}"))
+    elif role in ("button", "link") and props.get("text"):
         strategies.append(LocatorStrategy(kind="role", value=f"{role}:{props['text']}"))
-    if props.get("text"):
+
+    if label:
+        strategies.append(LocatorStrategy(kind="label", value=label))
+    if props.get("text") and props["text"] != label:
         strategies.append(LocatorStrategy(kind="text", value=props["text"]))
+    if props.get("placeholder"):
+        strategies.append(
+            LocatorStrategy(kind="css", value=f"{props['tag']}[placeholder=\"{props['placeholder']}\"]")
+        )
     if props.get("name"):
         strategies.append(LocatorStrategy(kind="css", value=f"{props['tag']}[name=\"{props['name']}\"]"))
     if props.get("id"):
         strategies.append(LocatorStrategy(kind="css", value=f"#{props['id']}"))
+    if props.get("nthOfType"):
+        strategies.append(
+            LocatorStrategy(kind="css", value=f"{props['tag']}:nth-of-type({props['nthOfType']})")
+        )
 
     return strategies or [LocatorStrategy(kind="css", value=props["tag"])]
 

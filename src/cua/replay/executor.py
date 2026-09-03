@@ -132,6 +132,16 @@ class ReplayExecutor:
         self._last_intervention_path: str | None = None
 
     def run(self, capability: Capability, params: dict) -> ReplayResult:
+        """Public entrypoint: runs the replay, then writes the final
+        ReplayResult itself into its own evidence directory as result.json
+        — the per-step JSONL log has the blow-by-blow, but until now the
+        result a caller actually acts on only ever reached stdout."""
+        result = self._execute(capability, params)
+        if result.evidence_path:
+            Path(result.evidence_path, "result.json").write_text(result.model_dump_json(indent=2))
+        return result
+
+    def _execute(self, capability: Capability, params: dict) -> ReplayResult:
         _validate_params(capability, params)
 
         run_id = f"replay-{uuid.uuid4().hex[:10]}"
@@ -187,6 +197,8 @@ class ReplayExecutor:
                     just_escalated = False
                     continue
                 just_escalated = False
+                step_started_at = time.monotonic()
+                logger.log("step_started", step=step.id, action=step.action.value)
 
                 if not self.allowlist.permits_action(step.action.value):
                     logger.log("allowlist_rejected", step=step.id, action=step.action.value)
@@ -314,6 +326,10 @@ class ReplayExecutor:
                         just_escalated = True
                         continue
 
+                logger.log(
+                    "step_finished", step=step.id, resolved_via=resolved_via.get(step.id),
+                    duration_ms=round((time.monotonic() - step_started_at) * 1000),
+                )
                 step_index += 1
 
             while not self._poll_checkpoint(capability.success_checkpoint):

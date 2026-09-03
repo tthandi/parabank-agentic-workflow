@@ -131,16 +131,27 @@ password in shell history.
 
 ### 1. Schema invariants
 
-- [ ] `model_validator` on `Step` / `Capability`; `extra="forbid"` on all
+- [x] `model_validator` on `Step` / `Capability`; `extra="forbid"` on all
       artifact models.
-- [ ] Exactly one of `value_param` / `value_literal` for fill and select.
-- [ ] `business_outcome_code` required when `on_failure == "business_outcome"`.
-- [ ] Locator required for click/fill/select; value required for navigate.
-- [ ] Semver format enforced on `version`.
-- [ ] `ArtifactStore.load` validates that every `value_param` names a
-      declared input.
-- [ ] `_validate_params` (`executor.py:41`) rejects unknown params and
-      checks `string`.
+- [x] Exactly one of `value_param` / `value_literal` for fill and select.
+- [x] `business_outcome_code` required when `on_failure == "business_outcome"`.
+- [x] Locator required for click/fill/select; value required for navigate.
+- [x] Semver format enforced on `version`.
+- [x] `ArtifactStore.load` validates that every `value_param` names a
+      declared input. (Enforced on `Capability` itself via
+      `model_validator`, which runs on every load/construction — not
+      special-cased in `ArtifactStore`, since that's strictly stronger:
+      it also catches a bad artifact built any other way.)
+- [x] `_validate_params` (`executor.py:41`) rejects unknown params and
+      checks `string`. (Landed in Phase 0's executor rewrite, since it
+      touched the same function.)
+
+**Status:** Done. Confirmed the currently-saved
+`capabilities/parabank.find-transactions-over-amount/0.1.0.json` still
+loads cleanly under the new invariants (no re-record needed for this).
+Fixed one test fixture (`tests/test_replay_escalation.py`) that had been
+constructing an invalid `Step` (a CLICK with no locator) — the new
+validator correctly rejects it now.
 
 ### 2. Per-step replay observability
 
@@ -150,11 +161,21 @@ password in shell history.
 stdout, never written to evidence. Requirement 3.5 asks for per-step
 observability and `obslog/logger.py`'s own docstring claims it.
 
-- [ ] Log `step_started` / `step_finished` with `resolved_via` and duration.
-- [ ] Write the `ReplayResult` JSON into the run's evidence directory.
+- [x] Log `step_started` / `step_finished` with `resolved_via` and duration.
+- [x] Write the `ReplayResult` JSON into the run's evidence directory.
 
 This is a small change that finally makes the strongest design idea in the
 project — `resolved_via` as a drift metric — visible in evidence.
+
+**Status:** Done. `run()` now delegates to `_execute()` and writes
+`result.json` into the evidence dir regardless of which return path fired,
+so every failure/business_outcome/success path gets it for free. Verified
+live: `evidence/replay-7bceff898b/`'s log went from 3 lines to 13
+(`step_started`/`step_finished` × 5 steps + `outputs` + the terminal
+event), each `step_finished` carrying `resolved_via` and `duration_ms`.
+Not committed as separate evidence — folded into the Phase 2 re-record
+pass instead of regenerating the curated set 3-4 times as items 3/5/6
+below also touch it.
 
 ### 3. Verify the checking-account condition
 
@@ -163,9 +184,21 @@ artifact assumes the first row is checking
 (`artifact/recorder.py:139-163`). It is the flow's most brittle business
 assumption.
 
-- [ ] Either assert `Account Type: CHECKING` after step 4, or select the
+- [x] Either assert `Account Type: CHECKING` after step 4, or select the
       row semantically.
-- [ ] Bump the capability to `0.2.0`, re-record, refresh evidence.
+- [x] Bump the capability to `0.2.0`, re-record, refresh evidence.
+
+**Status:** Done — asserted rather than semantically selected (simpler,
+and the plan allows either). Step 4's checkpoint now requires the exact
+tab-separated substring `"Account Type:\tCHECKING"` (confirmed via live
+`inner_text()`, not guessed) instead of the weaker `"Account Activity"`,
+which passed on ANY account's activity page, checking or savings. The
+locator's *selection* still relies on first-row-is-checking (documented in
+the step's own description, per REPORT.md #7) — this only makes the
+assumption fail loudly instead of silently reading the wrong account's
+transactions. Also gave this checkpoint on_failure="retry" (see item 5).
+Re-recorded as part of the single combined re-record pass at the end of
+this phase (see the note under item 9) rather than 3-4 separate ones.
 
 ### 4. Recursive and value-based redaction
 
@@ -191,7 +224,22 @@ at once, and is directly testable.
 - [ ] Give the post-login checkpoint a `RetryPolicy`.
 - [ ] Force a recovery with Playwright network throttling for one evidence
       run.
-- [ ] Back it with a fake-surface test asserting `recovered_steps`.
+- [x] Back it with a fake-surface test asserting `recovered_steps`.
+
+**Status:** Mostly done, one piece cut for time. Gave the account-click
+step's checkpoint (not the post-login one specifically — same class of
+AJAX-timing hazard, see item 3's status) `on_failure="retry"` +
+`RetryPolicy(max_attempts=2, backoff_ms=500)`, so it's live in the
+committed capability, not just a hypothetical. `tests/test_replay_retry.py`
+proves both directions against a fake surface: a checkpoint that becomes
+true on the 2nd retry attempt recovers (`recovered_steps == ["step-1"]`,
+`escalated == False`); one that never does exhausts retries and correctly
+falls through to escalation instead (`escalated == True`). Cut: an actual
+network-throttled live evidence run forcing a real recovery — the
+fake-surface tests pin the mechanism precisely (control exactly which
+poll succeeds), which a live throttled run can't do as reliably, so this
+was judged lower-value than the time it'd cost. Documented as a next step
+in REPORT.md #7 rather than silently dropped.
 
 ### 6. Deepen harvested locators
 
@@ -199,10 +247,22 @@ at once, and is directly testable.
 strategy, so there is nothing to fall back to and `resolved_via` can only
 ever report `css` on the steps that run first.
 
-- [ ] Extend `_harvest_strategies` (`loop.py:61`) to emit label /
+- [x] Extend `_harvest_strategies` (`loop.py:61`) to emit label /
       placeholder / role-with-name plus a positional CSS fallback, ordered
       semantic -> structural.
-- [ ] Re-record.
+- [x] Re-record.
+
+**Status:** Done. `_harvest_strategies` now also checks `<label for=...>`/
+wrapping-`<label>` text, `aria-label`, `placeholder`, and a same-tag
+positional CSS fallback (`tag:nth-of-type(n)`), ranked semantic before
+structural. Verified live against the real login form: `Username`/
+`Password` still yield exactly one strategy each (`css` by `name`
+attribute) — confirmed this is correct, not a bug in the new code. Those
+two `<input>`s genuinely have no id, no placeholder, no label, and are the
+sole child of their wrapping `<div>`, so there is nothing more for any of
+the new checks to find; the improvement is real but this app's own markup
+doesn't happen to exercise it. It generalizes to apps that do have
+labels/siblings, which is the multi-tenant story in REPORT.md #4.
 
 ### 7. Targeted test suite for the load-bearing seams
 
@@ -237,8 +297,20 @@ ever report `css` on the steps that run first.
 `ArtifactStore.save` overwrites silently. Nothing bumps, nothing refuses to
 clobber, so "versioned" is nominal.
 
-- [ ] `record()` takes or derives a version.
-- [ ] `save()` refuses to overwrite an existing version unless forced.
+- [x] `record()` takes or derives a version.
+- [x] `save()` refuses to overwrite an existing version unless forced.
+
+**Status:** Done. `ArtifactRecorder.record()` takes `version: str =
+"0.1.0"`, caller-supplied rather than auto-incremented — whether a
+re-record is a meaningful new version vs. an identical re-run of the same
+goal is a judgment call, not safe to guess. `ArtifactStore.save()` now
+raises `VersionExistsError` on a collision unless `force=True`; `cua run`
+gained `--capability-version` and `--force-overwrite`. Used this for real:
+re-recorded as `0.2.0` in one combined pass covering items 1/3/5/6's
+schema and recorder changes together, rather than 3-4 separate re-records
+— `cua run --capability-version 0.2.0 ...` refused to run without the
+flag once `0.1.0` already existed for a different flow shape, exactly as
+designed.
 
 ---
 

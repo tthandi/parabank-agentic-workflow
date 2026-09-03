@@ -23,11 +23,14 @@ Design notes (expand on these in REPORT.md #2):
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 class ActionType(str, Enum):
@@ -52,6 +55,8 @@ class RiskLevel(str, Enum):
 class LocatorStrategy(BaseModel):
     """One way to find a target control. Tried in the order they appear on Locator.strategies."""
 
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["role", "label", "text", "test_id", "css", "xpath"]
     value: str
     # For frameset/iframe-heavy legacy apps: the chain of frame names/selectors
@@ -60,11 +65,15 @@ class LocatorStrategy(BaseModel):
 
 
 class Locator(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     description: str  # human-readable, e.g. "Account Type dropdown on Open New Account"
     strategies: list[LocatorStrategy]  # ranked primary -> fallback; first match wins
 
 
 class RetryPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     max_attempts: int = 2
     backoff_ms: int = 500
 
@@ -74,13 +83,21 @@ class Checkpoint(BaseModel):
     the app actually reached the expected state, rather than assuming the
     prior action worked."""
 
+    model_config = ConfigDict(extra="forbid")
+
     description: str
     locator: Locator | None = None
     expected_text_contains: str | None = None
     timeout_ms: int = 5000
 
 
+_LOCATOR_REQUIRED_ACTIONS = {ActionType.CLICK, ActionType.FILL, ActionType.SELECT}
+_VALUE_REQUIRED_ACTIONS = {ActionType.FILL, ActionType.SELECT, ActionType.NAVIGATE}
+
+
 class Step(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     action: ActionType
     locator: Locator | None = None  # None for e.g. NAVIGATE, ASSERT-on-url
@@ -104,8 +121,31 @@ class Step(BaseModel):
     retry: RetryPolicy | None = None
     business_outcome_code: str | None = None  # required when on_failure == business_outcome
 
+    @model_validator(mode="after")
+    def _check_invariants(self) -> "Step":
+        if self.action in _LOCATOR_REQUIRED_ACTIONS and self.locator is None:
+            raise ValueError(f"step '{self.id}': action '{self.action.value}' requires a locator")
+
+        if self.action in (ActionType.FILL, ActionType.SELECT):
+            has_param, has_literal = self.value_param is not None, self.value_literal is not None
+            if has_param == has_literal:  # both set, or neither
+                raise ValueError(
+                    f"step '{self.id}': action '{self.action.value}' requires exactly one of "
+                    "value_param/value_literal, not both or neither"
+                )
+        elif self.action == ActionType.NAVIGATE:
+            if self.value_param is None and self.value_literal is None:
+                raise ValueError(f"step '{self.id}': action 'navigate' requires value_param or value_literal")
+
+        if self.on_failure == "business_outcome" and not self.business_outcome_code:
+            raise ValueError(f"step '{self.id}': on_failure='business_outcome' requires business_outcome_code")
+
+        return self
+
 
 class ParamSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     type: Literal["string", "int", "float", "enum"]
     required: bool = True
@@ -121,6 +161,8 @@ class ParamSpec(BaseModel):
 
 
 class OutputSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     type: Literal["string", "int", "float", "bool", "array"]
     description: str = ""
@@ -135,6 +177,8 @@ class OutputSpec(BaseModel):
 
 class Capability(BaseModel):
     """A reusable, reviewable, agent-invocable automation flow."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str  # stable slug, e.g. "parabank.find-transactions"
     name: str
@@ -152,3 +196,18 @@ class Capability(BaseModel):
     # never the raw transcript itself (see artifact/recorder.py).
     created_from_run_id: str
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> "Capability":
+        if not _SEMVER_RE.match(self.version):
+            raise ValueError(f"version '{self.version}' is not valid semver (expected N.N.N)")
+
+        declared = {p.name for p in self.inputs}
+        for step in self.steps:
+            if step.value_param and step.value_param not in declared:
+                raise ValueError(
+                    f"step '{step.id}' references value_param '{step.value_param}', which is not "
+                    f"a declared input (declared: {sorted(declared) or 'none'})"
+                )
+
+        return self

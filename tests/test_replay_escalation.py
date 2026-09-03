@@ -9,7 +9,7 @@ regression shows up here first.
 
 from __future__ import annotations
 
-from cua.artifact.schema import ActionType, Capability, Checkpoint, Step
+from cua.artifact.schema import ActionType, Capability, Checkpoint, Locator, LocatorStrategy, Step
 from cua.obslog.logger import RunLogger
 from cua.replay.executor import ReplayExecutor
 from cua.replay.outcomes import OutcomeKind
@@ -41,7 +41,13 @@ def _capability() -> Capability:
     return Capability(
         id="parabank.demo", name="Demo", version="0.1.0", description="demo",
         target_app="parabank", entry_url="http://localhost:8080/parabank/index.htm",
-        steps=[Step(id="step-1", action=ActionType.CLICK)],
+        steps=[
+            Step(
+                id="step-1",
+                action=ActionType.CLICK,
+                locator=Locator(description="demo target", strategies=[LocatorStrategy(kind="text", value="Go")]),
+            )
+        ],
         success_checkpoint=Checkpoint(description="done"), created_from_run_id="run-1",
     )
 

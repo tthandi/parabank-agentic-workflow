@@ -44,6 +44,7 @@ from cua.artifact.schema import (
     LocatorStrategy,
     OutputSpec,
     ParamSpec,
+    RetryPolicy,
     RiskLevel,
     Step,
 )
@@ -59,7 +60,13 @@ _ACTION_MAP = {
 
 
 class ArtifactRecorder:
-    def record(self, result: RunResult, target_app: str) -> Capability:
+    def record(self, result: RunResult, target_app: str, version: str = "0.1.0") -> Capability:
+        """`version` is caller-supplied, not auto-incremented: deciding
+        whether a re-recording is a meaningful new version (vs. re-running
+        the same discovery goal that happens to produce an identical flow)
+        is a judgment call, not something safe to guess at automatically.
+        ArtifactStore.save() separately refuses to silently overwrite an
+        existing version regardless of what's passed here."""
         if not result.succeeded:
             raise ValueError(f"cannot record a failed run: {result.stuck_reason}")
 
@@ -135,7 +142,16 @@ class ArtifactRecorder:
         # --- Hand-specified rewrite of the account-selection step ----------
         # Replace whatever literal account-number click the transcript
         # recorded with a structural locator that generalizes across
-        # personas (see module docstring).
+        # personas (see module docstring). The checkpoint asserts the
+        # landed-on account is actually CHECKING rather than assuming the
+        # first row always is — "Account Type:\tCHECKING" is the exact
+        # tab-separated substring ParaBank's own Account Details table
+        # renders (confirmed live via inner_text), so this fails loudly on
+        # a wrong account instead of silently reading the wrong one's
+        # transactions. The locator's *selection* still relies on the
+        # first-row-is-checking assumption (documented in its description)
+        # — this checkpoint verifies that assumption held, it doesn't
+        # remove the assumption.
         for i, step in enumerate(steps):
             if step.action == ActionType.CLICK and step.locator and any(
                 s.value.isdigit() for s in step.locator.strategies if s.kind == "text"
@@ -147,18 +163,27 @@ class ArtifactRecorder:
                         description=(
                             "First account link in the Accounts Overview table — ParaBank "
                             "creates a customer's first account as CHECKING at registration "
-                            "and lists it first; not re-verified per account here (see "
-                            "REPORT.md #7)."
+                            "and lists it first. The checkpoint below verifies this held; it "
+                            "does not select a different row if it didn't (see REPORT.md #7)."
                         ),
                         strategies=[
                             LocatorStrategy(kind="css", value="#accountTable tbody tr:first-child a"),
                         ],
                     ),
                     risk=RiskLevel.SAFE,
-                    on_failure="hard_fail",
+                    # "retry" rather than hard_fail: the Account Details
+                    # table (where this checkpoint's text lives) populates
+                    # via async fetch after the surrounding page renders
+                    # (see surface/browser.py's resolve_strategy — the same
+                    # AJAX-timing hazard). A mismatch on the first check is
+                    # more often "hasn't loaded yet" than "wrong account";
+                    # retrying costs nothing in the transient case and still
+                    # correctly escalates if the account really is wrong.
+                    on_failure="retry",
+                    retry=RetryPolicy(max_attempts=2, backoff_ms=500),
                     checkpoint=Checkpoint(
-                        description="Landed on an Account Activity page",
-                        expected_text_contains="Account Activity",
+                        description="Landed on the CHECKING account's Account Activity page",
+                        expected_text_contains="Account Type:\tCHECKING",
                     ),
                 )
 
@@ -205,7 +230,7 @@ class ArtifactRecorder:
         return Capability(
             id=f"{target_app}.find-transactions-over-amount",
             name="Find checking-account transactions over an amount",
-            version="0.1.0",
+            version=version,
             description=(
                 "Logs in, navigates to the customer's checking account, and returns every "
                 "transaction on it with amount strictly greater than min_amount."

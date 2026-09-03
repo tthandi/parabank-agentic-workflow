@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from cua.agent.llm import LLMDecider
 from cua.agent.loop import AgentLoop, StoppingConditions
 from cua.artifact.recorder import ArtifactRecorder
-from cua.artifact.store import ArtifactStore
+from cua.artifact.store import ArtifactStore, VersionExistsError
 from cua.safety.allowlist import Allowlist
 from cua.safety.redact import is_sensitive_field
 from cua.surface.browser import BrowserSurface
@@ -59,7 +59,21 @@ def main() -> None:
     help="Login password. Prefer the CUA_PASSWORD env var over this flag to keep it out of shell history.",
 )
 @click.option("--max-steps", default=25, show_default=True)
-def run(goal: str, target: str, username: str | None, password: str | None, max_steps: int) -> None:
+@click.option(
+    "--capability-version", default="0.1.0", show_default=True,
+    help="Version to record the resulting capability as. Bump this deliberately on a "
+    "re-record that changes the flow — it is never auto-incremented (see "
+    "docs/remediation-plan.md Phase 1 item 9).",
+)
+@click.option(
+    "--force-overwrite", is_flag=True, default=False,
+    help="Allow overwriting an already-saved capability at this exact version. "
+    "Off by default — ArtifactStore.save() otherwise refuses to clobber one silently.",
+)
+def run(
+    goal: str, target: str, username: str | None, password: str | None, max_steps: int,
+    capability_version: str, force_overwrite: bool,
+) -> None:
     """Run the LLM-driven discovery agent against a live target and save the resulting capability.
 
     Credentials travel out-of-band from `goal` (see agent/prompts.py) — the
@@ -85,8 +99,11 @@ def run(goal: str, target: str, username: str | None, password: str | None, max_
         click.echo(f"Stuck/failed: {result.stuck_reason}")
         raise SystemExit(1)
 
-    capability = ArtifactRecorder().record(result, target_app=target)
-    path = ArtifactStore().save(capability)
+    capability = ArtifactRecorder().record(result, target_app=target, version=capability_version)
+    try:
+        path = ArtifactStore().save(capability, force=force_overwrite)
+    except VersionExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"Capability saved: {capability.id} v{capability.version} -> {path}")
 
 
