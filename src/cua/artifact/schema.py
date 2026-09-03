@@ -111,6 +111,13 @@ class ParamSpec(BaseModel):
     required: bool = True
     description: str = ""
     enum_values: list[str] | None = None
+    # A secret param (e.g. a password) is never expected inline in a
+    # --params JSON blob or any other place that could land in shell
+    # history or a log — callers (see cli.py's `replay`) read it from a
+    # CUA_<NAME> env var instead. This is a caller contract, not
+    # enforcement: the schema can't stop a caller from passing one inline
+    # anyway, so treat this as documentation callers are expected to honor.
+    secret: bool = False
 
 
 class OutputSpec(BaseModel):

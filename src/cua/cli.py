@@ -19,6 +19,7 @@ from cua.agent.loop import AgentLoop, StoppingConditions
 from cua.artifact.recorder import ArtifactRecorder
 from cua.artifact.store import ArtifactStore
 from cua.safety.allowlist import Allowlist
+from cua.safety.redact import is_sensitive_field
 from cua.surface.browser import BrowserSurface
 
 _TARGET_ENTRY_URLS = {
@@ -92,15 +93,41 @@ def run(goal: str, target: str, username: str | None, password: str | None, max_
 @main.command()
 @click.option("--capability", required=True, help="Capability id, e.g. 'parabank.find-transactions'.")
 @click.option("--version", required=True, help="Capability version, e.g. '0.1.0'.")
-@click.option("--params", default="{}", help="JSON-encoded input params.")
-def replay(capability: str, version: str, params: str) -> None:
+@click.option(
+    "--params", default="{}",
+    help="JSON-encoded NON-secret input params. A secret param (ParamSpec.secret, "
+    "e.g. password) must NOT go here — it's read from a CUA_<PARAM_NAME> env var "
+    "instead, the same way `cua run` keeps it out of --goal and shell history.",
+)
+@click.option(
+    "--unattended", is_flag=True, default=False,
+    help="Never block on a human confirmation/handoff. An unrecoverable condition "
+    "returns FAILURE marked escalated=true, with the intervention persisted to "
+    "evidence/ for later review, instead of waiting on input().",
+)
+def replay(capability: str, version: str, params: str, unattended: bool) -> None:
     """Deterministically replay a saved capability artifact — no LLM in the loop."""
     from cua.replay.executor import ReplayExecutor
 
     parsed = json.loads(params)
     cap = ArtifactStore().load(capability, version)
+
+    for spec in cap.inputs:
+        if not (spec.secret or is_sensitive_field(spec.name)) or spec.name in parsed:
+            continue
+        env_name = f"CUA_{spec.name.upper()}"
+        value = os.environ.get(env_name)
+        if value is None:
+            if spec.required:
+                raise click.ClickException(
+                    f"Missing required secret param '{spec.name}': set ${env_name} "
+                    f"(never pass it via --params)"
+                )
+            continue
+        parsed[spec.name] = value
+
     surface = BrowserSurface(headless=_headless())
-    executor = ReplayExecutor(surface=surface, allowlist=_allowlist())
+    executor = ReplayExecutor(surface=surface, allowlist=_allowlist(), attended=not unattended)
 
     result = executor.run(cap, parsed)
     click.echo(result.model_dump_json(indent=2))

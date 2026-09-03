@@ -199,6 +199,7 @@ class ArtifactRecorder:
                         type="string",
                         required=True,
                         description="ParaBank login password. Never persisted — supply at replay time.",
+                        secret=True,
                     )
 
         return Capability(

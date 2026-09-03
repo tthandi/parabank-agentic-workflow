@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urljoin
 
 from cua.agent.llm import AgentAction, LLMDecider
 from cua.artifact.schema import Locator, LocatorStrategy
@@ -18,7 +19,7 @@ from cua.escalation.handoff import HandoffController
 from cua.escalation.intervention import InterventionRequest, raise_intervention
 from cua.escalation.operator_mock import prompt_operator
 from cua.obslog.logger import RunLogger
-from cua.safety.allowlist import Allowlist
+from cua.safety.allowlist import Allowlist, AllowlistViolation
 from cua.safety.redact import is_sensitive_field, redact
 from cua.surface.browser import BrowserSurface
 
@@ -288,7 +289,12 @@ class AgentLoop:
                     break
 
                 url_before = observation.url
-                entry = self._act(action, step_num, observation, logger)
+                try:
+                    entry = self._act(action, step_num, observation, logger)
+                except AllowlistViolation as exc:
+                    logger.log("policy_violation", step=step_num, phase=exc.phase, reason=str(exc))
+                    stuck_reason = f"policy violation: {exc}"
+                    break
                 transcript.append(entry)
 
                 if entry.get("resolution_failed"):
@@ -327,6 +333,12 @@ class AgentLoop:
         entry: dict = {"index": step_num, "action": action.__dict__}
 
         if action.kind == "navigate":
+            # Checked BEFORE goto, not just after (see the post-action check
+            # in run()) — a post-only check lets the browser briefly load a
+            # disallowed page before anyone notices. AllowlistViolation
+            # propagates to run(), which stops the loop as a policy
+            # violation rather than treating it like a resolution failure.
+            self.allowlist.enforce_url(action.value, phase="pre-navigate")
             self.surface.page.goto(action.value)
             entry["locator"] = None
             return entry
@@ -363,6 +375,16 @@ class AgentLoop:
         entry["locator"] = locator.model_dump()
 
         if action.kind == "click":
+            # Pre-click check for anchors: read href off the resolved
+            # element and enforce it before clicking, same reasoning as
+            # navigate above. Non-anchor clicks (buttons that submit a form,
+            # JS-driven nav) have no href to inspect here — the post-action
+            # check in run() is what catches those.
+            href = element.get_attribute("href")
+            if href:
+                self.allowlist.enforce_url(
+                    urljoin(self.surface.current_url(), href), phase="pre-click"
+                )
             element.click()
         elif action.kind == "fill":
             element.fill(action.value)

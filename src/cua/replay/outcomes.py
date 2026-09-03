@@ -44,4 +44,12 @@ class ReplayResult(BaseModel):
     # more fragile, without anyone having to eyeball a screenshot to notice.
     resolved_via: dict[str, str] = {}
 
+    # True if an unrecoverable condition routed through escalation
+    # (escalation/handoff.py) before this result was returned — whether a
+    # human's intervention resolved it (kind may still be SUCCESS) or the
+    # escalation was exhausted/skipped (kind is FAILURE). intervention_path
+    # points at the persisted InterventionRequest JSON when set.
+    escalated: bool = False
+    intervention_path: str | None = None
+
     evidence_path: str | None = None

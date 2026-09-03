@@ -1,0 +1,3 @@
+{"ts": "2026-09-03T04:45:38.344900+00:00", "run_id": "replay-fd1e783f7e", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.1.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-03T04:45:41.865811+00:00", "run_id": "replay-fd1e783f7e", "event_type": "outputs", "matching_transactions": "4 rows", "match_count": 4}
+{"ts": "2026-09-03T04:45:41.866021+00:00", "run_id": "replay-fd1e783f7e", "event_type": "replay_succeeded"}
