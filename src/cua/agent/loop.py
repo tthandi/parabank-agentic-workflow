@@ -233,6 +233,14 @@ class AgentLoop:
         evidence_dir = EVIDENCE_ROOT / run_id
         evidence_dir.mkdir(parents=True, exist_ok=True)
         logger = RunLogger(run_id, evidence_dir)
+        # Belt-and-suspenders alongside the per-field is_sensitive_field
+        # check below: this catches a secret value repeated somewhere
+        # unexpected (a model-generated `reason` string, a nested
+        # human_actions dict from a handoff) that field-name checking alone
+        # would miss entirely.
+        for key, value in (credentials or {}).items():
+            if is_sensitive_field(key):
+                logger.register_secret(value)
 
         # Lines of "what I tried and what happened" fed back to the model
         # each turn — NOT a list of AgentActions. A failed resolution has to
@@ -372,6 +380,16 @@ class AgentLoop:
         entry: dict = {"index": step_num, "action": action.__dict__}
 
         if action.kind == "navigate":
+            if not action.value:
+                # A malformed action (no URL), not a policy question —
+                # urlparse(None) inside enforce_url would raise an opaque
+                # TypeError instead of a legible outcome. Treat it as a
+                # failed resolution, the same as any other action the model
+                # asked for that can't actually be carried out.
+                logger.log("target_unresolved", step=step_num, target="(navigate: no URL provided)")
+                entry["locator"] = None
+                entry["resolution_failed"] = True
+                return entry
             # Checked BEFORE goto, not just after (see the post-action check
             # in run()) — a post-only check lets the browser briefly load a
             # disallowed page before anyone notices. AllowlistViolation

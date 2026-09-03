@@ -37,6 +37,7 @@ from cua.replay.locator import LocatorResolutionError, resolve_with_fallback
 from cua.replay.outcomes import OutcomeKind, ReplayResult
 from cua.safety.allowlist import Allowlist, AllowlistViolation
 from cua.safety.policy import confirm_risky_action, handling_for
+from cua.safety.redact import is_sensitive_field
 from cua.surface.browser import BrowserSurface
 
 EVIDENCE_ROOT = Path(__file__).resolve().parents[3] / "evidence"
@@ -46,6 +47,17 @@ _FIND_TRANSACTIONS_CAPABILITY_ID = "parabank.find-transactions-over-amount"
 
 class ParamValidationError(Exception):
     pass
+
+
+class MissingValueError(Exception):
+    """Raised when a step needs a value to act (NAVIGATE's URL) and doesn't
+    have one — e.g. an optional param referenced by value_param wasn't
+    supplied at replay time. Distinct from LocatorResolutionError (no
+    locator is involved for NAVIGATE) and from AllowlistViolation (this
+    isn't a policy question) — but escalation-eligible for the same
+    reason both of those are: the step genuinely can't proceed as
+    specified, and a human may be able to say what should happen instead.
+    """
 
 
 def _validate_params(capability: Capability, params: dict) -> None:
@@ -148,6 +160,12 @@ class ReplayExecutor:
         evidence_dir = EVIDENCE_ROOT / run_id
         evidence_dir.mkdir(parents=True, exist_ok=True)
         logger = RunLogger(run_id, evidence_dir)
+        # Same reasoning as agent/loop.py: field-name-based redaction alone
+        # only protects the one field known to hold a secret, not every
+        # place its value could resurface in the log.
+        for spec in capability.inputs:
+            if (spec.secret or is_sensitive_field(spec.name)) and spec.name in params:
+                logger.register_secret(str(params[spec.name]))
         logger.log(
             "replay_started", capability_id=capability.id, version=capability.version,
             params_keys=sorted(params.keys()),
@@ -272,6 +290,17 @@ class ReplayExecutor:
                     escalations_used += 1
                     just_escalated = True
                     continue
+                except MissingValueError as exc:
+                    logger.log("missing_value", step=step.id, reason=str(exc))
+                    outcome = self._escalate(
+                        capability, step.id, evidence_dir, logger, escalations_used,
+                        reason=str(exc), expected="a value to act on", observed="none supplied",
+                    )
+                    if outcome is not None:
+                        return outcome
+                    escalations_used += 1
+                    just_escalated = True
+                    continue
 
                 current_url = self.surface.current_url()
                 try:
@@ -300,15 +329,27 @@ class ReplayExecutor:
                                 break
 
                     if not ok:
-                        observed = self.surface.page.inner_text("body")[:300]
+                        full_text = self.surface.page.inner_text("body")
+                        observed = full_text[:300]
                         if step.on_failure == "business_outcome":
                             self._capture_failure_evidence(evidence_dir, step.id)
-                            logger.log("business_outcome", step=step.id, code=step.business_outcome_code)
+                            # Require the app's own positive signal before
+                            # reporting business_outcome_code, when one is
+                            # declared — a checkpoint mismatch alone doesn't
+                            # distinguish "the app told us why" from "the
+                            # page was just slow" (see recorder.py's
+                            # comment on the login step for the concrete
+                            # misclassification this prevents).
+                            if step.business_outcome_signal and step.business_outcome_signal not in full_text:
+                                code = step.business_outcome_unknown_code
+                            else:
+                                code = step.business_outcome_code
+                            logger.log("business_outcome", step=step.id, code=code)
                             return ReplayResult(
                                 kind=OutcomeKind.BUSINESS_OUTCOME,
                                 capability_id=capability.id,
                                 capability_version=capability.version,
-                                business_outcome_code=step.business_outcome_code,
+                                business_outcome_code=code,
                                 resolved_via=resolved_via,
                                 recovered_steps=recovered_steps,
                                 evidence_path=str(evidence_dir),
@@ -389,6 +430,15 @@ class ReplayExecutor:
             value = step.value_literal
 
         if step.action == ActionType.NAVIGATE:
+            if not value:
+                # An optional value_param not supplied at replay time, most
+                # likely — the schema guarantees a NAVIGATE step HAS a
+                # value_param/value_literal declared, not that it resolves
+                # to something truthy at runtime. Without this check,
+                # enforce_url(None, ...) fails with an opaque TypeError
+                # from urlparse instead of a legible, escalation-eligible
+                # outcome.
+                raise MissingValueError(f"step '{step.id}': navigate has no value to go to")
             # Checked BEFORE goto, not just via the post-action check in
             # run() — a post-only check lets the browser briefly load a
             # disallowed page before anyone notices.

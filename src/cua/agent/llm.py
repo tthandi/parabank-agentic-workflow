@@ -8,7 +8,7 @@ rewriting this file, not the loop.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 import anthropic
 
@@ -18,6 +18,7 @@ from cua.surface.types import Observation
 ActionKind = Literal[
     "navigate", "click", "fill", "select", "wait_for", "extract", "assert", "done", "stuck"
 ]
+_VALID_ACTION_KINDS: set[str] = set(get_args(ActionKind))
 
 
 @dataclass
@@ -213,7 +214,20 @@ class LLMDecider:
             tool_choice={"type": "any"},
             messages=[{"role": "user", "content": user_msg}],
         )
-        tool_use = next(b for b in resp.content if b.type == "tool_use")
+        tool_use = next((b for b in resp.content if b.type == "tool_use"), None)
+        if tool_use is None:
+            # tool_choice={"type": "any"} should force this every turn, but
+            # "should" isn't "does" — a bare next(...) here raised an
+            # unhandled StopIteration on the rare turn the model didn't
+            # comply, crashing the whole run instead of treating it as one
+            # bad turn. A turn the loop can't act on IS a stuck turn.
+            return AgentAction(kind="stuck", reason="Model returned no tool call for this turn.")
+        if tool_use.name not in _VALID_ACTION_KINDS:
+            # Trusting tool_use.name as a valid ActionKind outright meant an
+            # unrecognized name (a model or SDK-version quirk) would reach
+            # agent/loop.py and fail somewhere far less legible than here.
+            return AgentAction(kind="stuck", reason=f"Model called an unrecognized tool: {tool_use.name!r}")
+
         inp = tool_use.input
         return AgentAction(
             kind=tool_use.name,  # type: ignore[arg-type]

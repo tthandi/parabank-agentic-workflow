@@ -207,13 +207,26 @@ this phase (see the note under item 9) rather than 3-4 separate ones.
 dicts — which passes through untouched. Model-generated `reason` text is
 also trusted not to repeat a secret.
 
-- [ ] Walk nested dicts / lists / tuples in `RunLogger`.
-- [ ] Register the run's supplied secrets at start; scrub exact matches
+- [x] Walk nested dicts / lists / tuples in `RunLogger`.
+- [x] Register the run's supplied secrets at start; scrub exact matches
       anywhere in the record.
-- [ ] Assert on the serialised line that no registered secret survives.
+- [x] Assert on the serialised line that no registered secret survives.
 
 That single assertion closes the `reason` hole and the `human_actions` hole
 at once, and is directly testable.
+
+**Status:** Done. `RunLogger._scrub` now recurses through dicts/lists/
+tuples (previously only top-level `str` fields were touched at all).
+Added `register_secret(value)`: both `agent/loop.py` (credential dict
+values flagged by `is_sensitive_field`) and `replay/executor.py`
+(`ParamSpec.secret`-or-`is_sensitive_field` params) register their secret
+values on the run's logger before anything else logs, so every subsequent
+line — not just the field known to hold the value — gets scrubbed of exact
+matches. `tests/test_obslog.py` asserts the two holes the review named
+directly: a secret nested inside a `human_actions`-shaped list-of-dicts,
+and a secret repeated in an unrelated free-text `reason` field a model
+wrote — plus that shape-based redaction still recurses, and that nothing
+survives across multiple log lines from the same logger.
 
 ### 5. Prove the retry path
 
@@ -266,30 +279,73 @@ labels/siblings, which is the multi-tenant story in REPORT.md #4.
 
 ### 7. Targeted test suite for the load-bearing seams
 
-- [ ] Off-allowlist navigation attempt.
-- [ ] Click / navigation ending outside an allowed route.
-- [ ] Replay-to-escalation flow.
-- [ ] Risky confirmation and irreversible block.
-- [ ] Malformed capability rejection.
-- [ ] Nested redaction.
-- [ ] Retry recovery.
+- [x] Off-allowlist navigation attempt.
+- [x] Click / navigation ending outside an allowed route.
+- [x] Replay-to-escalation flow.
+- [x] Risky confirmation and irreversible block.
+- [x] Malformed capability rejection.
+- [x] Nested redaction.
+- [x] Retry recovery.
+
+**Status:** Done, all seven — each landed alongside the item above that
+motivated it, plus two added specifically to close this checklist:
+`tests/test_replay_risk_policy.py` (RISKY confirmed/declined,
+IRREVERSIBLE blocked without ever prompting — nothing exercised
+`safety/policy.py`'s risk gating at all before this) and
+`tests/test_artifact_schema.py::TestMalformedCapabilityRejection` (every
+invariant from item 1, plus an unknown-field rejection). Also added
+`TestPostActionBlock` to `test_replay_escalation.py`: a click with no
+`href` to pre-check (client-side navigation) that lands off-allowlist is
+still caught by the *post*-action check, distinct from the pre-click path
+`TestPreNavigateBlock` already covered. 57/57 tests pass.
 
 ### 8. Robustness and credential hygiene
 
-- [ ] `agent/llm.py:216` — `next(b for b in resp.content ...)` raises
+- [x] `agent/llm.py:216` — `next(b for b in resp.content ...)` raises
       `StopIteration` when the model returns no tool block. Handle as a
       stuck turn, not a traceback.
-- [ ] Validate `kind` against `ActionKind` instead of trusting
+- [x] Validate `kind` against `ActionKind` instead of trusting
       `tool_use.name`.
-- [ ] Guard `navigate` with a null value (`page.goto(None)`).
-- [ ] Add `secret: true` to `ParamSpec`; have `cua replay` read secret
+- [x] Guard `navigate` with a null value (`page.goto(None)`).
+- [x] Add `secret: true` to `ParamSpec`; have `cua replay` read secret
       params from env. Today the README's replay commands put the password
       inline in `--params` JSON — straight into shell history — while
       `cua run` deliberately routes it through `CUA_PASSWORD`.
-- [ ] Make `login_failed` require ParaBank's actual error banner; report
+- [x] Make `login_failed` require ParaBank's actual error banner; report
       the absence-only case as a distinct `login_state_unknown`. Currently
       a slow app is reported to the caller as bad credentials, which is
       exactly the misclassification the outcome taxonomy exists to prevent.
+
+**Status:** Done, all five.
+- `LLMDecider.decide()`: a missing tool_use block or an unrecognized
+  `tool_use.name` both now return `AgentAction(kind="stuck", ...)` instead
+  of an unhandled `StopIteration` or trusting an arbitrary string as a
+  valid `ActionKind`.
+- `agent/loop.py` and `replay/executor.py` both guard a null/empty
+  NAVIGATE value before it reaches `enforce_url`/`urlparse` — the
+  discovery path treats it as a resolution failure (same as any other
+  unresolvable action); replay raises a new `MissingValueError`, caught
+  alongside `LocatorResolutionError`/`AllowlistViolation` and routed
+  through the same escalation seam from Phase 0 B.
+- `secret`/env-var handling landed early, during Phase 0 B (same command
+  surface was already being edited there).
+- `login_failed` vs `login_state_unknown`: added `Step.business_outcome_signal`
+  (a positive text that must ALSO be present to confirm the named business
+  outcome) and `business_outcome_unknown_code` (reported when the
+  checkpoint fails but the signal isn't confirmed either — enforced by a
+  new `Capability` model_validator: setting one without the other is
+  rejected). The login step's signal is ParaBank's real banner text ("The
+  username and password could not be verified.", confirmed live).
+  `tests/test_business_outcome_signal.py` proves both branches against a
+  fake surface; verified live too — a genuine bad-password replay against
+  `v0.3.0` correctly reports `login_failed` with the real banner present.
+- Also removed `_VALUE_REQUIRED_ACTIONS` from `artifact/schema.py`: dead
+  code left over from an earlier draft of the Step validator, noticed
+  while adding the fields above.
+
+Re-recorded once more as `0.3.0` (on top of `0.2.0`'s items 1/3/5/6
+changes) to carry `business_outcome_signal` into the committed artifact —
+the third and final re-record of this phase.
 
 ### 9. Real versioning
 

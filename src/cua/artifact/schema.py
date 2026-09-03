@@ -92,7 +92,6 @@ class Checkpoint(BaseModel):
 
 
 _LOCATOR_REQUIRED_ACTIONS = {ActionType.CLICK, ActionType.FILL, ActionType.SELECT}
-_VALUE_REQUIRED_ACTIONS = {ActionType.FILL, ActionType.SELECT, ActionType.NAVIGATE}
 
 
 class Step(BaseModel):
@@ -120,6 +119,20 @@ class Step(BaseModel):
     on_failure: Literal["hard_fail", "retry", "business_outcome"] = "hard_fail"
     retry: RetryPolicy | None = None
     business_outcome_code: str | None = None  # required when on_failure == business_outcome
+    # Optional positive confirmation for a business_outcome classification:
+    # a specific substring (e.g. the app's actual "credentials rejected"
+    # banner) that must ALSO be present before reporting business_outcome_code.
+    # Without this, "the success checkpoint didn't match" and "the app told
+    # us specifically why" get conflated — a checkpoint can fail to match
+    # for reasons that have nothing to do with the named business outcome
+    # (the page was just slow), and reporting business_outcome_code anyway
+    # is exactly the misclassification the {success, business_outcome,
+    # failure} taxonomy exists to prevent. When set and NOT confirmed,
+    # business_outcome_unknown_code is reported instead — "we don't know
+    # what happened" is itself a legitimate, distinct answer, not a reason
+    # to guess.
+    business_outcome_signal: str | None = None
+    business_outcome_unknown_code: str | None = None
 
     @model_validator(mode="after")
     def _check_invariants(self) -> "Step":
@@ -139,6 +152,11 @@ class Step(BaseModel):
 
         if self.on_failure == "business_outcome" and not self.business_outcome_code:
             raise ValueError(f"step '{self.id}': on_failure='business_outcome' requires business_outcome_code")
+        if self.business_outcome_signal and not self.business_outcome_unknown_code:
+            raise ValueError(
+                f"step '{self.id}': business_outcome_signal requires business_outcome_unknown_code "
+                "(what to report when the signal isn't confirmed either)"
+            )
 
         return self
 

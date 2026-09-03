@@ -124,6 +124,14 @@ class ArtifactRecorder:
         # banner) apart from a hard failure — without this, a bad password
         # at replay time would just silently stay on the login page and
         # fail confusingly at a much later step instead.
+        #
+        # business_outcome_signal requires ParaBank's OWN error banner text
+        # (confirmed live) before reporting login_failed — a checkpoint
+        # mismatch alone doesn't distinguish "credentials rejected" from
+        # "the page was just slow"; a slow app misreported to the caller as
+        # bad credentials is exactly the misclassification the taxonomy
+        # exists to prevent. login_state_unknown covers the case neither
+        # the success text nor the known failure banner shows up.
         for i, step in enumerate(steps):
             if step.action == ActionType.CLICK and step.locator and step.locator.description == "Log In":
                 steps[i] = Step(
@@ -133,6 +141,8 @@ class ArtifactRecorder:
                     risk=RiskLevel.SAFE,
                     on_failure="business_outcome",
                     business_outcome_code="login_failed",
+                    business_outcome_signal="The username and password could not be verified.",
+                    business_outcome_unknown_code="login_state_unknown",
                     checkpoint=Checkpoint(
                         description="Left the login page for Accounts Overview",
                         expected_text_contains="Accounts Overview",

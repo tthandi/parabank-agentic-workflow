@@ -133,3 +133,62 @@ class TestPreNavigateBlock:
             pass
 
         assert surface.page.goto_calls == [], "goto() must never be called for a disallowed URL"
+
+
+class TestPostActionBlock:
+    """A click with no href to pre-check (a form-submitting button, or
+    client-side JS navigation) can still land somewhere disallowed — the
+    post-action check in run() is what catches that case, distinct from
+    the pre-click href check above."""
+
+    def test_a_click_that_navigates_off_allowlist_is_caught_after_the_fact(self, monkeypatch, tmp_path):
+        import cua.replay.executor as executor_module
+
+        monkeypatch.setattr(executor_module, "EVIDENCE_ROOT", tmp_path)
+
+        class DriftingElement:
+            def __init__(self, surface: "DriftingSurface") -> None:
+                self._surface = surface
+
+            def click(self) -> None:
+                self._surface._url = "https://evil.example.com/landed-here"
+
+            def get_attribute(self, name: str) -> str | None:
+                return None  # not an anchor — nothing for the pre-click check to catch
+
+        class DriftingSurface(FakeSurface):
+            def __init__(self) -> None:
+                super().__init__()
+
+            def start(self, entry_url: str) -> None:
+                pass
+
+            def stop(self, save_trace_to: str | None = None) -> None:
+                pass
+
+            def resolve(self, locator: Locator):
+                return DriftingElement(self), "css"
+
+            class _Page:
+                def inner_text(self, selector: str) -> str:
+                    return "done"
+
+            page = _Page()
+
+        surface = DriftingSurface()
+        allowlist = Allowlist(
+            allowed_domains=["localhost"], allowed_route_prefixes=["/parabank/*"], allowed_actions=["click"]
+        )
+        executor = ReplayExecutor(surface=surface, allowlist=allowlist, attended=False)
+        locator = Locator(description="Go", strategies=[LocatorStrategy(kind="text", value="Go")])
+        cap = Capability(
+            id="parabank.drift-demo", name="Drift demo", version="0.1.0", description="demo",
+            target_app="parabank", entry_url="http://localhost:8080/parabank/index.htm",
+            steps=[Step(id="step-1", action=ActionType.CLICK, locator=locator)],
+            success_checkpoint=Checkpoint(description="done"), created_from_run_id="run-1",
+        )
+
+        result = executor.run(cap, {})
+
+        assert result.kind == OutcomeKind.FAILURE
+        assert result.escalated is True
