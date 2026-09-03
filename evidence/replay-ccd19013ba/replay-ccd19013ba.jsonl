@@ -1,2 +1,0 @@
-{"ts": "2026-09-03T04:46:10.240250+00:00", "run_id": "replay-ccd19013ba", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.1.0", "params_keys": ["min_amount", "password", "username"]}
-{"ts": "2026-09-03T04:46:10.913057+00:00", "run_id": "replay-ccd19013ba", "event_type": "entry_navigation_failed", "error": "Page.goto: net::ERR_UNSAFE_PORT at http://localhost:9/parabank/index.htm\nCall log:\n  - navigating to \"http://localhost:9/parabank/index.htm\", waiting until \"load\"\n"}

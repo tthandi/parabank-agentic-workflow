@@ -54,7 +54,9 @@ def main() -> int:
     load_dotenv()
     sys.stdin.isatty = lambda: True  # see module docstring
 
-    capability = ArtifactStore().load("parabank.find-transactions-over-amount", "0.1.0")
+    store = ArtifactStore()
+    capability_id = "parabank.find-transactions-over-amount"
+    capability = store.load(capability_id, store.latest_version(capability_id))
     for step in capability.steps:
         if step.id == "step-4-click":
             step.locator.strategies = [

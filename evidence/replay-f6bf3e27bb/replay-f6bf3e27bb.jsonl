@@ -1,0 +1,7 @@
+{"ts": "2026-09-03T05:15:03.815394+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.3.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-03T05:15:04.504079+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-03T05:15:04.545584+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 42}
+{"ts": "2026-09-03T05:15:04.545721+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-03T05:15:04.566425+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 21}
+{"ts": "2026-09-03T05:15:04.566606+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-03T05:15:09.866591+00:00", "run_id": "replay-f6bf3e27bb", "event_type": "business_outcome", "step": "step-3-click", "code": "login_failed"}

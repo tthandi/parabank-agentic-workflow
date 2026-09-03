@@ -1,0 +1,13 @@
+{"ts": "2026-09-03T05:14:57.048597+00:00", "run_id": "replay-166321457c", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.3.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-03T05:14:57.732114+00:00", "run_id": "replay-166321457c", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-03T05:14:57.773070+00:00", "run_id": "replay-166321457c", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 41}
+{"ts": "2026-09-03T05:14:57.773278+00:00", "run_id": "replay-166321457c", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-03T05:14:57.793435+00:00", "run_id": "replay-166321457c", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 20}
+{"ts": "2026-09-03T05:14:57.793606+00:00", "run_id": "replay-166321457c", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-03T05:14:57.885463+00:00", "run_id": "replay-166321457c", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 92}
+{"ts": "2026-09-03T05:14:57.885621+00:00", "run_id": "replay-166321457c", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-03T05:14:58.078113+00:00", "run_id": "replay-166321457c", "event_type": "step_finished", "step": "step-4-click", "resolved_via": "css", "duration_ms": 192}
+{"ts": "2026-09-03T05:14:58.078286+00:00", "run_id": "replay-166321457c", "event_type": "step_started", "step": "step-5-extract", "action": "extract"}
+{"ts": "2026-09-03T05:14:58.082956+00:00", "run_id": "replay-166321457c", "event_type": "step_finished", "step": "step-5-extract", "resolved_via": "css", "duration_ms": 5}
+{"ts": "2026-09-03T05:14:58.108105+00:00", "run_id": "replay-166321457c", "event_type": "outputs", "matching_transactions": "0 rows", "match_count": 0}
+{"ts": "2026-09-03T05:14:58.108224+00:00", "run_id": "replay-166321457c", "event_type": "business_outcome", "code": "no_matching_transactions"}

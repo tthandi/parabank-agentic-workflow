@@ -387,19 +387,51 @@ The brief asks for ~1-3 pages; REPORT.md is ~2,600 words. Target
 | 6. Safety | 435 |
 | 7. Cuts | 241 |
 
-- [ ] Halve sections 5 and 6 — they repeat what the code comments already
+- [x] Halve sections 5 and 6 — they repeat what the code comments already
       say. Keep the evidence pointers.
-- [ ] Keep all seven required headings.
+- [x] Keep all seven required headings.
+
+**Status:** Done, target adjusted. REPORT.md is a full rewrite, not just a
+trim — it was also stale: §5 didn't mention replay escalating at all
+(Phase 0 B added that), §2/§6 didn't mention schema invariants, real
+versioning, `business_outcome_signal`, or recursive redaction (all Phase
+1). 2,592 → 2,039 words (~21%), short of the 1,300-1,500 target, because
+genuinely new load-bearing content had to go in alongside the trim —
+replay's escalation path is exactly the kind of thing this document
+should describe, not omit for brevity. §5 and §6 are both tighter than
+before per-topic; there's just more to cover now that more is built. All
+seven headings kept, in order.
 
 ### Docs consistency
 
-- [ ] README's demo section says "live headless browser" but
+- [x] README's demo section says "live headless browser" but
       `CUA_HEADLESS` defaults to `false`.
-- [ ] Document the new escalation / unattended flags.
-- [ ] Regenerate `evidence/README.md`'s table after the Phase 1 re-records.
-- [ ] Confirm the brief version: the review cites
+- [x] Document the new escalation / unattended flags.
+- [x] Regenerate `evidence/README.md`'s table after the Phase 1 re-records.
+- [x] Confirm the brief version: the review cites
       `Assignment A — Computer-Use Automation System (3).pdf`; the repo has
       `(2).pdf`.
+
+**Status:** Done, all four.
+- README's Demo path now correctly describes headed-by-default (with the
+  override), documents `--capability-version`/`--force-overwrite`
+  (`cua run`) and `--unattended` (`cua replay`), and — a real staleness
+  bug this same pass found — the replay examples still showed the OLD
+  `--params '{"...,"password":"..."}'` pattern from before Phase 0 B
+  moved secrets to `CUA_<NAME>` env vars, contradicting the actual current
+  behavior. Fixed.
+- `evidence/README.md` fully regenerated against a final, consistent
+  evidence set: one discovery run and five replay runs (success, both
+  business outcomes, hard failure, escalated-and-recovered), all against
+  the current `0.3.0` capability, plus the discovery escalation transcript.
+  `scripts/demo_replay_escalation.py` had its own staleness bug fixed
+  along the way — it hardcoded `"0.1.0"` rather than loading the latest
+  version, so it was silently exercising the pre-Phase-1 artifact every
+  time it ran.
+- Brief version: `md5` on all four downloaded copies (no suffix, `(1)`,
+  `(2)`, `(3)`) confirms they're byte-identical — the `(3)` is a repeat
+  download of the same file, not a revised brief. No content to
+  reconcile.
 
 ---
 
@@ -424,3 +456,43 @@ shebangs point at a host Python path that was not resolvable from the
 environment used to review the code. Everything above comes from reading
 the source and the committed evidence. Run `pytest` locally before working
 through the list to establish a green baseline.
+
+---
+
+## Execution summary
+
+Phases 0, 1, and 2 are complete — every checkbox above is checked, with a
+**Status** note under each item saying what actually landed, what (if
+anything) was cut, and pointing at the test and/or live evidence that
+proves it. Baseline was established first (`pytest`, green, 24/24, before
+touching anything) and re-confirmed after every change; 57/57 pass at the
+end. Two real, unplanned bugs surfaced by the *process* of doing this work
+rather than by the review itself, both fixed and both worth naming
+because neither was hypothetical:
+
+- `AgentLoop.run()` writes real evidence files via `RunLogger` regardless
+  of whether the *surface* passed to it is fake — `EVIDENCE_ROOT` is a
+  hardcoded path, not surface-dependent. The first fake-surface allowlist
+  test quietly built up over a dozen real `evidence/discovery-*/`
+  directories across repeated `pytest` runs in this session before it was
+  noticed. Fixed with an autouse fixture pattern, applied to every
+  fake-surface test file added afterward.
+- A failed `surface.start()` in replay (e.g. an unreachable target) could
+  leak the browser process and skip trace evidence, because the
+  early-return for that case sat outside the `try/finally` that calls
+  `surface.stop()` — found by actually triggering the hard-failure
+  evidence scenario, not by inspection.
+
+The capability was re-recorded three times over the course of Phase 1
+(`0.1.0` → `0.2.0` → `0.3.0`), each a real discovery run against the live
+local ParaBank instance, combining several items' changes per re-record
+rather than one per item. `evidence/` and `evidence/README.md` reflect the
+final, consistent state: one discovery run and five replay runs (success,
+both business outcomes, hard failure, escalated-and-recovered), all
+against `0.3.0`, plus the discovery escalation transcript.
+
+**Not done:** the optional transfer-funds capability expansion below —
+correctly last-priority per this plan's own ordering principle, and the
+"only if time remains" framing was taken at face value rather than
+started speculatively. `carol_low`'s seeding for it is already in place if
+it's picked up later.

@@ -1,0 +1,10 @@
+{
+  "run_id": "replay-f4907b57e1",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "goal": "Replay of capability 'parabank.find-transactions-over-amount' v0.3.0: Logs in, navigates to the customer's checking account, and returns every transaction on it with amount strictly greater than min_amount.",
+  "current_step_id": "step-4-click",
+  "reason": "locator exhausted",
+  "screenshot_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-f4907b57e1/escalation-step-4-click.png",
+  "url": "http://localhost:8080/parabank/overview.htm",
+  "created_at": "2026-09-03T05:15:52.043681+00:00"
+}

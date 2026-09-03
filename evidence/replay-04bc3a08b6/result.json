@@ -1,0 +1,15 @@
+{
+  "kind": "failure",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "capability_version": "0.3.0",
+  "outputs": {},
+  "business_outcome_code": null,
+  "failed_step_id": "entry",
+  "expected": "target reachable",
+  "observed": "Page.goto: net::ERR_UNSAFE_PORT at http://localhost:9/parabank/index.htm\nCall log:\n  - navigating to \"http://localhost:9/parabank/index.htm\", waiting until \"load\"\n",
+  "recovered_steps": [],
+  "resolved_via": {},
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-04bc3a08b6"
+}

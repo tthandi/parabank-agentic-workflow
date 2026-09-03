@@ -1,0 +1,13 @@
+{"ts": "2026-09-03T05:14:48.834560+00:00", "run_id": "replay-bba6a99ea2", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.3.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-03T05:14:50.421299+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-03T05:14:50.476558+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 56}
+{"ts": "2026-09-03T05:14:50.476703+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-03T05:14:50.499353+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 23}
+{"ts": "2026-09-03T05:14:50.499558+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-03T05:14:50.635770+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 136}
+{"ts": "2026-09-03T05:14:50.635922+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-03T05:14:50.733498+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_finished", "step": "step-4-click", "resolved_via": "css", "duration_ms": 98}
+{"ts": "2026-09-03T05:14:50.733741+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_started", "step": "step-5-extract", "action": "extract"}
+{"ts": "2026-09-03T05:14:50.738253+00:00", "run_id": "replay-bba6a99ea2", "event_type": "step_finished", "step": "step-5-extract", "resolved_via": "css", "duration_ms": 5}
+{"ts": "2026-09-03T05:14:50.781433+00:00", "run_id": "replay-bba6a99ea2", "event_type": "outputs", "matching_transactions": "4 rows", "match_count": 4}
+{"ts": "2026-09-03T05:14:50.781541+00:00", "run_id": "replay-bba6a99ea2", "event_type": "replay_succeeded"}

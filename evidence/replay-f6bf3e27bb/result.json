@@ -1,0 +1,19 @@
+{
+  "kind": "business_outcome",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "capability_version": "0.3.0",
+  "outputs": {},
+  "business_outcome_code": "login_failed",
+  "failed_step_id": null,
+  "expected": null,
+  "observed": null,
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role"
+  },
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-f6bf3e27bb"
+}

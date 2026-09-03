@@ -1,0 +1,49 @@
+{
+  "kind": "success",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "capability_version": "0.3.0",
+  "outputs": {
+    "matching_transactions": [
+      {
+        "date": "09-01-2026",
+        "description": "Deposit via Web Service",
+        "amount": 250.0,
+        "direction": "credit"
+      },
+      {
+        "date": "09-01-2026",
+        "description": "Deposit via Web Service",
+        "amount": 480.5,
+        "direction": "credit"
+      },
+      {
+        "date": "09-01-2026",
+        "description": "Withdraw via Web Service",
+        "amount": 125.0,
+        "direction": "debit"
+      },
+      {
+        "date": "09-01-2026",
+        "description": "Deposit via Web Service",
+        "amount": 999.99,
+        "direction": "credit"
+      }
+    ],
+    "match_count": 4
+  },
+  "business_outcome_code": null,
+  "failed_step_id": null,
+  "expected": null,
+  "observed": null,
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "css",
+    "step-5-extract": "css"
+  },
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-bba6a99ea2"
+}

@@ -1,0 +1,24 @@
+{
+  "kind": "business_outcome",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "capability_version": "0.3.0",
+  "outputs": {
+    "matching_transactions": [],
+    "match_count": 0
+  },
+  "business_outcome_code": "no_matching_transactions",
+  "failed_step_id": null,
+  "expected": null,
+  "observed": null,
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "css",
+    "step-5-extract": "css"
+  },
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-166321457c"
+}

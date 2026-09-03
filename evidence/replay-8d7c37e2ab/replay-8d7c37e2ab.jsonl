@@ -1,8 +1,0 @@
-{"ts": "2026-09-03T04:46:15.613031+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.1.0", "params_keys": ["min_amount", "password", "username"]}
-{"ts": "2026-09-03T04:46:19.357884+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "locator_exhausted", "step": "step-4-click"}
-{"ts": "2026-09-03T04:46:19.405405+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "intervention_raised", "step": "step-4-click", "path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-8d7c37e2ab/interventions/[REDACTED].json", "reason": "locator exhausted"}
-{"ts": "2026-09-03T04:46:19.416999+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "handoff_ceded", "reason": "locator exhausted", "url": "http://localhost:8080/parabank/overview.htm"}
-{"ts": "2026-09-03T04:46:20.003727+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "handoff_resumed", "url": "http://localhost:8080/parabank/activity.htm?id=13566", "human_actions": [{"reason": "locator exhausted", "url_before": "http://localhost:8080/parabank/overview.htm", "url_after": "http://localhost:8080/parabank/activity.htm?id=13566", "diff_summary": "navigated: http://localhost:8080/parabank/overview.htm -> http://localhost:8080/parabank/activity.htm?id=13566"}]}
-{"ts": "2026-09-03T04:46:20.006275+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "escalation_recovered_via_checkpoint", "step": "step-4-click"}
-{"ts": "2026-09-03T04:46:20.055496+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "outputs", "matching_transactions": "4 rows", "match_count": 4}
-{"ts": "2026-09-03T04:46:20.055718+00:00", "run_id": "replay-8d7c37e2ab", "event_type": "replay_succeeded"}

@@ -1,0 +1,17 @@
+{"ts": "2026-09-03T05:15:48.020976+00:00", "run_id": "replay-f4907b57e1", "event_type": "replay_started", "capability_id": "parabank.find-transactions-over-amount", "version": "0.3.0", "params_keys": ["min_amount", "password", "username"]}
+{"ts": "2026-09-03T05:15:48.753049+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-03T05:15:48.795210+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 42}
+{"ts": "2026-09-03T05:15:48.795362+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-03T05:15:48.816691+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 21}
+{"ts": "2026-09-03T05:15:48.816828+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-03T05:15:48.907825+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 91}
+{"ts": "2026-09-03T05:15:48.908045+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-03T05:15:52.007282+00:00", "run_id": "replay-f4907b57e1", "event_type": "locator_exhausted", "step": "step-4-click"}
+{"ts": "2026-09-03T05:15:52.043948+00:00", "run_id": "replay-f4907b57e1", "event_type": "intervention_raised", "step": "step-4-click", "path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-f4907b57e1/interventions/[REDACTED].json", "reason": "locator exhausted"}
+{"ts": "2026-09-03T05:15:52.057613+00:00", "run_id": "replay-f4907b57e1", "event_type": "handoff_ceded", "reason": "locator exhausted", "url": "http://localhost:8080/parabank/overview.htm"}
+{"ts": "2026-09-03T05:15:52.638045+00:00", "run_id": "replay-f4907b57e1", "event_type": "handoff_resumed", "url": "http://localhost:8080/parabank/activity.htm?id=13566", "human_actions": [{"reason": "locator exhausted", "url_before": "http://localhost:8080/parabank/overview.htm", "url_after": "http://localhost:8080/parabank/activity.htm?id=13566", "diff_summary": "navigated: http://localhost:8080/parabank/overview.htm -> http://localhost:8080/parabank/activity.htm?id=13566"}]}
+{"ts": "2026-09-03T05:15:52.640387+00:00", "run_id": "replay-f4907b57e1", "event_type": "escalation_recovered_via_checkpoint", "step": "step-4-click"}
+{"ts": "2026-09-03T05:15:52.640497+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_started", "step": "step-5-extract", "action": "extract"}
+{"ts": "2026-09-03T05:15:52.642743+00:00", "run_id": "replay-f4907b57e1", "event_type": "step_finished", "step": "step-5-extract", "resolved_via": "css", "duration_ms": 2}
+{"ts": "2026-09-03T05:15:52.680284+00:00", "run_id": "replay-f4907b57e1", "event_type": "outputs", "matching_transactions": "4 rows", "match_count": 4}
+{"ts": "2026-09-03T05:15:52.680383+00:00", "run_id": "replay-f4907b57e1", "event_type": "replay_succeeded"}
