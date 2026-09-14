@@ -1,0 +1,239 @@
+{
+  "id": "parabank.open-new-account",
+  "name": "Open a new account for an existing customer",
+  "version": "0.1.0",
+  "description": "Logs in and opens a new CHECKING or SAVINGS account, returning the new account number. IRREVERSIBLE: ParaBank has no close-account function, so unattended replay is blocked by policy and always routed to a human.",
+  "target_app": "parabank",
+  "entry_url": "/index.htm",
+  "inputs": [
+    {
+      "name": "username",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Username' field.",
+      "enum_values": null,
+      "secret": false
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "required": true,
+      "description": "ParaBank login password. Never persisted — supply at replay time.",
+      "enum_values": null,
+      "secret": true
+    },
+    {
+      "name": "account_type",
+      "type": "enum",
+      "required": true,
+      "description": "Type of account to open.",
+      "enum_values": [
+        "CHECKING",
+        "SAVINGS"
+      ],
+      "secret": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "new_account_id",
+      "type": "int",
+      "description": "Account number ParaBank opened.",
+      "source_locator": {
+        "description": "New account number",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#newAccountId",
+            "frame_path": []
+          }
+        ]
+      },
+      "item_shape": null
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Username",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"username\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "username",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-2-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Password",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"password\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "password",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-3-click",
+      "action": "click",
+      "locator": {
+        "description": "Log In",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "button:Log In",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Log In",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": {
+        "description": "Left the login page for Accounts Overview",
+        "locator": null,
+        "expected_text_contains": "Accounts Overview",
+        "timeout_ms": 5000
+      },
+      "on_failure": "business_outcome",
+      "retry": null,
+      "business_outcome_code": "login_failed",
+      "business_outcome_confirm_text": "The username and password could not be verified.",
+      "business_outcome_unknown_code": "login_state_unknown",
+      "business_outcomes": []
+    },
+    {
+      "id": "step-4-click",
+      "action": "click",
+      "locator": {
+        "description": "Open New Account",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "link:Open New Account",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Open New Account",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-5-select",
+      "action": "select",
+      "locator": {
+        "description": "What type of Account would you like to open?",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#type",
+            "frame_path": []
+          },
+          {
+            "kind": "css",
+            "value": "select:nth-of-type(1)",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "account_type",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-6-click",
+      "action": "click",
+      "locator": {
+        "description": "Open New Account",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "button:Open New Account",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Open New Account",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "irreversible",
+      "checkpoint": {
+        "description": "New account confirmation revealed",
+        "locator": null,
+        "expected_text_contains": "Account Opened!",
+        "timeout_ms": 10000
+      },
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    }
+  ],
+  "success_checkpoint": {
+    "description": "New account confirmation visible on the Open New Account page",
+    "locator": null,
+    "expected_text_contains": "Account Opened!",
+    "timeout_ms": 10000
+  },
+  "created_from_run_id": "discovery-f7b74c8c46",
+  "created_at": "2026-09-14T10:16:12.552012+00:00"
+}

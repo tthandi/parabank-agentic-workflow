@@ -84,6 +84,9 @@ class FakeSurface:
     def resolve(self, locator: Locator):
         return FakeElement(), "css"
 
+    def text(self, selector: str = "body") -> str:
+        return self.page.inner_text(selector)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_evidence_root(tmp_path, monkeypatch):
@@ -108,7 +111,7 @@ def _capability_with_retry_step() -> Capability:
                 action=ActionType.CLICK,
                 locator=locator,
                 on_failure="retry",
-                retry=RetryPolicy(max_attempts=3, backoff_ms=1),
+                retry=RetryPolicy(max_retries=3, backoff_ms=1),
                 checkpoint=Checkpoint(description="loaded", expected_text_contains="Expected Text", timeout_ms=1),
             )
         ],
@@ -131,7 +134,7 @@ def test_retry_recovers_a_transient_checkpoint_failure():
 
 
 def test_retry_exhausted_escalates_instead_of_recovering():
-    # Never becomes ready within max_attempts -> falls through to
+    # Never becomes ready within max_retries -> falls through to
     # escalation (unattended here, so a marked FAILURE, not a hang).
     surface = FakeSurface(ready_after_call=999)
     executor = ReplayExecutor(surface=surface, allowlist=_allowlist(), attended=False)
@@ -141,3 +144,41 @@ def test_retry_exhausted_escalates_instead_of_recovering():
     assert result.kind == OutcomeKind.FAILURE
     assert result.recovered_steps == []
     assert result.escalated is True
+
+
+def test_number_of_checkpoint_polls_matches_max_retries_field_name():
+    # `max_retries` should mean exactly what it says: the checkpoint is
+    # always checked once up front (see `_execute`), then up to
+    # `max_retries` additional times on top of that — never `max_retries`
+    # total, which is what the old name `max_attempts` implied.
+    # timeout_ms=0 makes _poll_checkpoint's own internal poll loop never
+    # iterate, so each call it makes is deterministically exactly one
+    # inner_text() read — the count below isn't racing real time.
+    surface = FakeSurface(ready_after_call=999)  # never becomes ready
+    locator = Locator(description="target", strategies=[LocatorStrategy(kind="css", value="#x")])
+    cap = Capability(
+        id="parabank.retry-count-demo", name="Retry count demo", version="0.1.0", description="demo",
+        target_app="parabank", entry_url="http://localhost:8080/parabank/index.htm",
+        steps=[
+            Step(
+                id="step-1",
+                action=ActionType.CLICK,
+                locator=locator,
+                on_failure="retry",
+                retry=RetryPolicy(max_retries=2, backoff_ms=1),
+                checkpoint=Checkpoint(description="loaded", expected_text_contains="Expected Text", timeout_ms=0),
+            )
+        ],
+        success_checkpoint=Checkpoint(description="done", expected_text_contains="Expected Text", timeout_ms=0),
+        created_from_run_id="run-1",
+    )
+    executor = ReplayExecutor(surface=surface, allowlist=_allowlist(), attended=False)
+
+    result = executor.run(cap, {})
+
+    assert result.kind == OutcomeKind.FAILURE
+    # 1 initial checkpoint check + max_retries(2) additional, then one more
+    # inner_text() read for the escalation's "observed" excerpt once
+    # retries are exhausted (executor.py's `full_text = ...` before it
+    # escalates) — 4 total, not 3.
+    assert surface.page._calls == 4

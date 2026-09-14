@@ -1,0 +1,20 @@
+{"ts": "2026-09-14T09:51:41.427346+00:00", "run_id": "replay-ee0790dc2e", "event_type": "replay_started", "capability_id": "parabank.transfer-funds", "version": "0.1.0", "params_keys": ["amount", "from_account", "password", "to_account", "username"]}
+{"ts": "2026-09-14T09:51:42.390564+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-14T09:51:42.426350+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 36}
+{"ts": "2026-09-14T09:51:42.426473+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-14T09:51:42.460388+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 34}
+{"ts": "2026-09-14T09:51:42.460581+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-14T09:51:42.566181+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 106}
+{"ts": "2026-09-14T09:51:42.566581+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-14T09:51:42.633405+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-4-click", "resolved_via": "role", "duration_ms": 67}
+{"ts": "2026-09-14T09:51:42.633595+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-5-fill", "action": "fill"}
+{"ts": "2026-09-14T09:51:42.651215+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-5-fill", "resolved_via": "css", "duration_ms": 18}
+{"ts": "2026-09-14T09:51:42.651349+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-6-select", "action": "select"}
+{"ts": "2026-09-14T09:51:42.660564+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-6-select", "resolved_via": "css", "duration_ms": 9}
+{"ts": "2026-09-14T09:51:42.660700+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-7-select", "action": "select"}
+{"ts": "2026-09-14T09:51:42.667949+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-7-select", "resolved_via": "css", "duration_ms": 7}
+{"ts": "2026-09-14T09:51:42.668068+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_started", "step": "step-8-click", "action": "click"}
+{"ts": "2026-09-14T09:51:42.668123+00:00", "run_id": "replay-ee0790dc2e", "event_type": "policy_confirmed", "step": "step-8-click"}
+{"ts": "2026-09-14T09:51:42.952162+00:00", "run_id": "replay-ee0790dc2e", "event_type": "step_finished", "step": "step-8-click", "resolved_via": "role", "duration_ms": 284}
+{"ts": "2026-09-14T09:51:42.958295+00:00", "run_id": "replay-ee0790dc2e", "event_type": "outputs", "confirmation_message": "Transfer Complete!\n\n$25.00 has been transferred from account #13566 to account #13677.\n\nSee Account Activity for more details."}
+{"ts": "2026-09-14T09:51:42.958390+00:00", "run_id": "replay-ee0790dc2e", "event_type": "replay_succeeded"}

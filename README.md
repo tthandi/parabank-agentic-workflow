@@ -101,7 +101,7 @@ CUA_PASSWORD='Fixture!23' cua replay --capability parabank.find-transactions-ove
 
 # business outcome: bad credentials, confirmed via ParaBank's own error
 # banner (not just a checkpoint miss, which could just mean a slow page —
-# see REPORT.md #3 and Step.business_outcome_signal in artifact/schema.py)
+# see REPORT.md #3 and Step.business_outcome_confirm_text in artifact/schema.py)
 CUA_PASSWORD='WrongPassword!' cua replay --capability parabank.find-transactions-over-amount \
   --version 0.3.0 --params '{"username":"alice_h","min_amount":100}'
 
@@ -111,11 +111,49 @@ CUA_PASSWORD='WrongPassword!' cua replay --capability parabank.find-transactions
 # auto-downgrades to this whenever stdin isn't a real TTY anyway, so a
 # scheduled/CI replay can never hang forever with no one able to answer it.
 
+# 2b. Second capability: transfer-funds (RISKY confirmation gate).
+#     Recorded from its own real discovery run. step-8-click is classified
+#     RISKY at record time, so replay refuses to move money without an
+#     explicit y/n. Account ids are typed INPUTS, not baked literals, and
+#     entry_url is tenant-relative — pass --base-url to point the same
+#     artifact at a different institution.
+CUA_PASSWORD='Fixture!23' cua replay --capability parabank.transfer-funds \
+  --version 0.1.0 --base-url http://localhost:8080/parabank \
+  --params '{"username":"alice_h","amount":25,"from_account":"13566","to_account":"13677"}'
+#     (from_account/to_account come from fixtures/seeded.json after seeding)
+
+# The risk gate needs an operator to answer. There's no interactive
+# terminal in this environment, so this script simulates the answer while
+# keeping the gate, the session and the money movement real:
+python scripts/demo_transfer_risky.py --answer y     # confirmed  -> SUCCESS
+python scripts/demo_transfer_risky.py --answer n     # declined   -> escalation -> FAILURE
+python scripts/demo_transfer_risky.py --unattended   # nobody to ask -> FAILURE
+
 # 3. Human escalation demos — real handoff of the SAME live session, not a
 #    fresh one, in both directions:
 python scripts/demo_escalation.py           # discovery: agent hits a goal ParaBank can't do, hands off
 python scripts/demo_replay_escalation.py    # replay: a drifted locator, hands off, recovers via checkpoint
 ```
+# 4. The capability catalog — saved artifacts as callable tools.
+cua catalog list                                     # what an agent can call
+cua catalog show parabank.transfer-funds             # the reviewer's view
+cua catalog show parabank.transfer-funds --schema    # the agent's view (no password in it)
+
+#    Unattended replay requires a human sign-off first. Draft is the default,
+#    so the safe state is the one you get by doing nothing:
+cua catalog invoke parabank.find-transactions-over-amount \
+  --args '{"username":"alice_h","min_amount":100}' --unattended     # refused: draft
+cua approve parabank.find-transactions-over-amount --version 0.3.0  # explicit human act
+CUA_PASSWORD='Fixture!23' cua catalog invoke parabank.find-transactions-over-amount \
+  --args '{"username":"alice_h","min_amount":100}' --unattended     # now runs
+
+# 5. An AI agent discovering a capability and calling it — the through-line
+#    end to end. The model is given only the generated tool schemas and a
+#    plain-language request; it picks the capability and the arguments. The
+#    password is never in any schema, so it never enters the model's context.
+CUA_PASSWORD='Fixture!23' python scripts/demo_agent_invocation.py \
+  --request "For the customer alice_h, what transactions over 100 dollars are on their checking account?"
+
 
 All of the above write structured JSONL logs and a Playwright trace to
 `evidence/<run_id>/`; replay additionally writes its final `ReplayResult`

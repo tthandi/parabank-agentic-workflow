@@ -14,11 +14,16 @@ artifact's locator fallback chain, not just a convenience.
 
 **Module boundaries** (`src/cua/`): `surface` (the only module that
 imports Playwright), `agent` (the LLM loop; imports `surface`+`artifact`,
-never the reverse), `artifact` (schema/recorder/store — no Playwright
-dependency, unit-testable in isolation), `replay` (depends on `artifact`+
-`surface`, not `agent` — constructible without the LLM client), `safety`
-and `escalation` (both depended on by `agent` and `replay`, so a guardrail
-or handoff mechanism added once applies to both paths).
+never the reverse), `artifact` (schema/recorder/store/transcript — no
+Playwright or `anthropic` dependency, unit-testable in isolation —
+`RunResult` lives in `artifact/transcript.py` rather than `agent/loop.py`
+specifically so `artifact/recorder.py` can depend on it without depending
+on `agent`), `replay` (depends on `artifact`+`surface`, not `agent` —
+constructible without the LLM client, and reaches the live page only
+through the `Surface` seam — `text()`/`count()`/`is_visible()`/
+`table_cells()`/`goto()` — never a raw `.page`), `safety` and `escalation`
+(both depended on by `agent` and `replay`, so a guardrail or handoff
+mechanism added once applies to both paths).
 
 **Key trade-off:** `agent/loop.py`'s natural-language → Locator resolution
 (`resolve_natural_target`) is a heuristic cascade (role → label →
@@ -43,21 +48,42 @@ depth.
 tries each in order and records `resolved_via` — which one actually won,
 per step, per replay — the concrete per-tenant drift signal §4 needs
 ("role degraded to css on 30% of replays" becomes measurable, not a
-guess).
+guess). `_harvest_strategies` (agent/loop.py) only emits a strategy the DOM
+actually supports at record time — it never fabricates a `role`/`label`/
+`text` alternative for an element that doesn't have one. In the one
+capability recorded so far, four of five steps have exactly one strategy
+(a `css` locator), so `resolved_via` reports `css` for those regardless of
+replay; that's a narrower signal than the mechanism could give with richer
+markup, not the mechanism lying. A fabricated fallback that can never
+resolve would make `resolved_via` actively misleading about drift, which is
+worse than an honestly short chain.
 
 **`Step.on_failure` distinguishes a *checkpoint mismatch* from a
 *resolution failure*** — a locator resolving to nothing is always a hard
 fail (the surface is broken); `on_failure` governs what it means when the
 action succeeded but the app answered with something else:
 `business_outcome`, `retry`, or `hard_fail`. A related, sharper distinction
-added after the first live replay: `Step.business_outcome_signal` — a
-checkpoint miss alone doesn't prove *why* (the login checkpoint failing
-could mean bad credentials, or just a slow page). The login step now
-requires ParaBank's actual "could not be verified" banner text before
-reporting `login_failed`; absent that too, it reports a distinct
-`login_state_unknown` rather than guessing. Enforced structurally: a
-`Capability` validator rejects `business_outcome_signal` set without its
-paired `business_outcome_unknown_code`.
+added after the first live replay: `Step.business_outcome_confirm_text`
+(named for what it holds — a substring to confirm in the page text, not a
+flag; renamed from the original `business_outcome_signal`, kept loadable
+via `validation_alias` so the three committed capability artifacts don't
+need re-recording) — a checkpoint miss alone doesn't prove *why* (the login
+checkpoint failing could mean bad credentials, or just a slow page). The
+login step now requires ParaBank's actual "could not be verified" banner
+text before reporting `login_failed`; absent that too, it reports a
+distinct `login_state_unknown` rather than guessing. Enforced structurally:
+a `Capability` validator rejects `business_outcome_confirm_text` set
+without its paired `business_outcome_unknown_code`.
+
+**`Step.business_outcomes` — many reasons, not one.** The single
+`business_outcome_code`/`confirm_text` pair is right for the login step,
+which has one interesting failure. Request Loan has four: ParaBank's own JS
+distinguishes "not sufficient funds for the given down payment" from "cannot
+grant a loan in that amount with your available funds" (and two more), and
+two are reproduced live in `evidence/`. A list of `(confirm_text -> code)`
+rules, first match wins, with `business_outcome_unknown_code` when none
+match, keeps *why* — the only part of a denial a caller can act on. Same
+conflation the three-way taxonomy prevents, one level further down.
 
 **`OutputSpec.type` grew an `"array"` variant with `item_shape`**, found
 wiring the first real capability — a filtered transaction list doesn't
@@ -206,9 +232,30 @@ previously had no ongoing URL check at all beyond the initial
 
 **Risk classification** (`RiskLevel`/`safety/policy.py`): SAFE/REVERSIBLE
 proceed; RISKY requires confirmation; IRREVERSIBLE is blocked unattended
-and always routed to a human. No step in the one recorded capability is
-above SAFE — the gating code is real and unit-tested (§5), not exercised
-by a live risky replay (§7).
+and always routed to a human. Risk is assigned at *record* time from a
+declarative table keyed on the control's visible text
+(`artifact/recorder.py`'s `_RISK_BY_TARGET`), matched exactly rather than
+by substring so that "Transfer Funds" (the nav link) stays SAFE while
+"Transfer" (the button that moves money) is RISKY — gating a step that
+does nothing is how you train an operator to click through confirmations.
+`parabank.transfer-funds` carries a RISKY step and all three of its
+branches are live-evidenced: confirmed (`evidence/replay-ee0790dc2e/`),
+declined (`evidence/replay-ea07ebb3b4/`), and unattended
+(`evidence/replay-74ba2577b9/`). `parabank.open-new-account` carries an
+IRREVERSIBLE one — ParaBank has no close-account function — blocked
+unattended (`evidence/replay-38c15dcf53/`) and completed by a human who
+took over the live session, with automation resuming and returning the
+typed output (`evidence/replay-c9f0db1c22/`).
+
+A schema invariant makes the blocked case coherent: **an IRREVERSIBLE step
+requires a checkpoint.** Policy forbids automation from performing it, so a
+human is the only way it completes — and replay detects that solely by
+re-testing the step's checkpoint before retrying. Without one the handoff
+dead-ends: the person opens the account, hands control back, and the replay
+fails anyway with the irreversible act already done. That is exactly what
+happened against the live app before the invariant existed. RISKY is
+deliberately not covered, since automation still performs it once
+confirmed.
 
 **Redaction: shape-based and value-based, and recursive.** `redact()`
 catches SSN/account-number-shaped text anywhere it appears; that alone
@@ -233,10 +280,20 @@ the credentials fix now enforces structurally.
 
 ## 7. Cuts
 
-- **Second capability** (transfer-funds) exercising `RISKY` confirmation
-  and a `validation_error` outcome with a *live* replay. `carol_low`'s
-  below-minimum-savings seeding anticipated this and sits unused. The
-  safety code path is implemented and unit-tested, not live-evidenced.
+- **~~A `validation_error` business outcome with a *live* replay.~~**
+  Built — as `parabank.request-loan`, not transfer-funds. The reason is
+  worth recording: ParaBank's Transfer Funds does **not** validate the
+  amount against the source balance — an over-balance transfer from a $6 account, and a
+  negative amount, both report "Transfer Complete!" (verified live). Its
+  only error path is a generic "An internal error has occurred" for a
+  malformed amount, which the typed `float` param contract now prevents a
+  caller from sending. So the capability declares `transfer_rejected` with
+  `transfer_state_unknown` as its honest sibling, and the branch is
+  unit-tested rather than live-evidenced. Request Loan is where the real
+  specific-validation outcome lives, so that is where it was built: two
+  distinct denial codes out of one step, live-evidenced
+  (`evidence/replay-5daadb612f/`, `evidence/replay-19116a145c/`), plus a
+  typed `new_account_id` on approval.
 - **Live network-throttled retry recovery.** The mechanism is proven
   against a fake surface that controls exactly which poll succeeds —
   judged more reliable and a better use of time than a live throttled run.
@@ -249,6 +306,41 @@ the credentials fix now enforces structurally.
   a documented seam (§4), not built.
 - **Full operator console.** Explicitly out of scope (§3.6); a terminal
   prompt stands in, demonstrated for real in both `scripts/demo_*.py`.
-- **Stretch goals** (capability catalog, code generation, confidence/
-  approval gating, multi-run stability scoring) — not attempted; depth
-  over breadth on schema, replay+error handling, and escalation instead.
+- **Stretch goals: two taken, four declined.** The brief says pick at most
+  one or two, so the two taken are the ones that make earlier decisions
+  real rather than adding surface area.
+
+  **Capability catalog** (`src/cua/catalog/`, `cua catalog list|show|invoke`).
+  Saved artifacts become tool schemas an LLM can be handed; the model picks
+  one by name and supplies typed args, and `scripts/demo_agent_invocation.py`
+  shows a real one being invoked end to end. This validates the project's
+  own through-line — *model discovers -> artifact -> agent invokes* — whose
+  last leg was previously asserted, not shown. It also forces two earlier
+  decisions to be load-bearing: a calling agent cannot catch a traceback, so
+  `run()` returning a `ReplayResult` for every outcome is what makes a
+  capability callable; and an agent can only pass arguments it was told
+  about, so `inputs` has to be a real contract. **Secret params are omitted
+  from the tool schema entirely** — a tool schema is the one place a model
+  is actively invited to invent a plausible value for anything listed, so a
+  credential must not be listed. Secrets resolve from `CUA_<NAME>` inside
+  the executor; the model cannot leak what it was never given.
+
+  **Confidence & approval** (`Capability.approval`, `replay_stats`,
+  `cua approve`). Everything records as `draft`; unattended replay — the
+  path a scheduler or agent takes with nobody watching — refuses a draft,
+  while attended replay does not, since exercising a capability with a
+  person watching is the only way it could earn approval. This is the
+  control a bank actually asks for: not "is this allowlisted" but "has a
+  human signed off that this may run unsupervised". It also gives
+  `resolved_via` its first consumer — `fallback_rate` is the share of steps
+  that did not win on their primary strategy, which is the §4 drift signal
+  finally being recorded rather than merely available.
+
+  Declined, with reasons: **code generation** is output transformation that
+  demonstrates no new judgment about schema, replay or safety;
+  **assisted LLM fallback** re-introduces the model into the production path
+  this system's thesis removes, and doing it safely is a project of its own;
+  **canonicalisation** is partly subsumed by the tenant-relative `entry_url`
+  + `--base-url` seam, and the rest is the scaling infrastructure §9 says
+  not to build; **multi-run stability** is largely redundant now that
+  approval gating records a success ratio and fallback rate per capability.

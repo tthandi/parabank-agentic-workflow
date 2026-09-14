@@ -33,7 +33,7 @@ def handling_for(risk: RiskLevel) -> str:
     }[risk]
 
 
-def confirm_risky_action(description: str, auto_confirm: bool = False) -> bool:
+def confirm_risky_action(description: str, attended: bool = True, auto_confirm: bool = False) -> bool:
     """Gate a RISKY step behind an explicit yes/no before replay proceeds.
 
     Deliberately distinct from escalation/handoff.py's live session
@@ -44,11 +44,19 @@ def confirm_risky_action(description: str, auto_confirm: bool = False) -> bool:
     force every risky-but-routine action (e.g. submitting a transfer) into
     a full browser handoff, which is disproportionate.
 
+    `attended` must be False for an unattended caller (e.g. `cua replay
+    --unattended`) — there is no one to answer the prompt, so this
+    auto-declines rather than blocking on `input()` and raising a bare
+    `EOFError`. Declining routes the step through the same escalation path
+    as any other declined confirmation; it does not proceed.
+
     `auto_confirm` exists only for non-interactive callers (tests); a real
     caller must never set it — that would defeat the gate.
     """
     if auto_confirm:
         return True
+    if not attended:
+        return False
     answer = input(
         f"[CONFIRM REQUIRED] About to perform a RISKY action: {description}\nProceed? [y/N]: "
     )

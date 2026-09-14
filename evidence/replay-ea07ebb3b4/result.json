@@ -1,0 +1,23 @@
+{
+  "kind": "failure",
+  "capability_id": "parabank.transfer-funds",
+  "capability_version": "0.1.0",
+  "outputs": {},
+  "business_outcome_code": null,
+  "failed_step_id": "step-8-click",
+  "expected": "operator confirms risky step",
+  "observed": "operator declined",
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "role",
+    "step-5-fill": "css",
+    "step-6-select": "css",
+    "step-7-select": "css"
+  },
+  "escalated": true,
+  "intervention_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-ea07ebb3b4/interventions/1789379557219-step-8-click-0.json",
+  "evidence_path": "evidence/replay-ea07ebb3b4"
+}

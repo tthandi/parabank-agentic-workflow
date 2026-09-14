@@ -1,0 +1,24 @@
+{
+  "kind": "business_outcome",
+  "capability_id": "parabank.request-loan",
+  "capability_version": "0.1.0",
+  "outputs": {},
+  "business_outcome_code": "insufficient_funds",
+  "failed_step_id": null,
+  "expected": null,
+  "observed": null,
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "role",
+    "step-5-fill": "css",
+    "step-6-fill": "css",
+    "step-7-select": "css",
+    "step-8-click": "role"
+  },
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "evidence/replay-19116a145c"
+}

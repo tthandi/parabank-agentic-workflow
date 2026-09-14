@@ -54,3 +54,35 @@ personas:
   - username: dave_ghost           # deliberately never registered
     register: false
     expect: { login: customer_not_found }
+
+  # --- personas that attack specific assumptions, not just happy paths ---
+
+  # The find-transactions capability selects "#accountTable's first row" on
+  # the documented assumption that ParaBank lists a customer's CHECKING
+  # account first (see recorder.py and REPORT.md #7). One account each is
+  # the case where that assumption cannot fail. Erin has three, so the
+  # step's checkpoint ("Account Type:\tCHECKING") is doing real work here
+  # rather than trivially holding.
+  - username: erin_multi
+    firstName: Erin
+    lastName: Multi
+    ssn: "444-55-6666"
+    phoneNumber: "555-0103"
+    register: true
+    savings: true
+    extra_savings: true            # a third account, so "first row" is a real choice
+    transactions: [[300.00, deposit], [45.00, withdraw]]
+    expect: { over_100: 1 }
+
+  # Volume. The transaction reader polls for rows then walks every one of
+  # them; every persona above has <10, so nothing has ever exercised a
+  # table that takes a moment to populate or a result set worth paging.
+  - username: frank_dense
+    firstName: Frank
+    lastName: Dense
+    ssn: "555-66-7777"
+    phoneNumber: "555-0104"
+    register: true
+    savings: false
+    bulk_transactions: { count: 60, amount: 150.00, kind: deposit }
+    expect: { over_100: 60 }

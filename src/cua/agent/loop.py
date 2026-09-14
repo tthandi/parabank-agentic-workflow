@@ -9,12 +9,13 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
 
 from cua.agent.llm import AgentAction, LLMDecider
 from cua.artifact.schema import Locator, LocatorStrategy
+from cua.artifact.transcript import RunResult
 from cua.escalation.handoff import HandoffController
 from cua.escalation.intervention import InterventionRequest, raise_intervention
 from cua.escalation.operator_mock import prompt_operator
@@ -36,17 +37,14 @@ class StoppingConditions:
     # about the page changes between asks) is its own kind of stuck. Past
     # this many escalations in one run, stop asking and terminate instead.
     max_escalations: int = 1
-
-
-@dataclass
-class RunResult:
-    run_id: str
-    goal: str
-    entry_url: str
-    succeeded: bool
-    transcript: list[dict] = field(default_factory=list)
-    stuck_reason: str | None = None
-    evidence_dir: str = ""
+    # The other dead-end the brief names (§3.1: "max steps, timeout,
+    # dead-end"): the model repeating an action that keeps SUCCEEDING but
+    # changes nothing. The system prompt asks it to call `stuck` in that
+    # case, and a real transfer-funds discovery run showed it doesn't —
+    # it re-selected the same two dropdown values for 11 consecutive turns
+    # until max_steps caught it, at full API cost per turn. Self-reporting
+    # is not a stopping condition; this is.
+    max_repeated_actions: int = 3
 
 
 _ROLE_BY_TAG = {"a": "link", "button": "button", "select": "combobox"}
@@ -66,16 +64,42 @@ _HARVEST_JS = """el => {
     const siblings = el.parentElement
         ? Array.from(el.parentElement.children).filter(c => c.tagName === el.tagName)
         : [];
+
+    // What counts as this element's identifying TEXT.
+    //
+    // The old expression was `el.innerText || el.value`, applied to every
+    // element, and it harvested DATA as though it were identity:
+    //   - a <select>'s innerText is its option list, so both of ParaBank's
+    //     account dropdowns harvested "13566\\n13677" — seed-specific
+    //     account numbers, identical between the two controls, and exactly
+    //     the non-reusable literal the account-link rewrite exists to keep
+    //     out of an artifact;
+    //   - a text <input>'s `value` is whatever is typed in it. Harvesting
+    //     runs before fill() today, so the field is usually empty — but on
+    //     any already-populated field it would bake the live value into a
+    //     recorded locator, and for a password field that is a credential
+    //     written straight into the artifact, past every redaction layer.
+    // A button's `value` IS its visible label, so button-ish inputs keep it.
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const isButtonish = tag === 'button'
+        || (tag === 'input' && ['submit', 'button', 'reset'].includes(type));
+    const isFormControl = ['input', 'select', 'textarea'].includes(tag);
+    const identifyingText = isButtonish
+        ? (el.value || el.innerText || '')
+        : (isFormControl ? '' : (el.innerText || ''));
+
     return {
-        tag: el.tagName.toLowerCase(),
+        tag: tag,
         type: el.getAttribute('type'),
         id: el.id || null,
         name: el.getAttribute('name'),
         placeholder: el.getAttribute('placeholder'),
         ariaLabel: el.getAttribute('aria-label'),
         labelText: labelText,
-        text: (el.innerText || el.value || '').trim().slice(0, 80),
+        text: identifyingText.trim().slice(0, 80),
         nthOfType: siblings.length > 1 ? siblings.indexOf(el) + 1 : null,
+        parentId: el.parentElement ? (el.parentElement.id || null) : null,
     };
 }"""
 
@@ -92,11 +116,21 @@ def _harvest_strategies(element) -> list[LocatorStrategy]:
     CSS selector among same-tag siblings — something to fall back to even
     when an element has no distinguishing attribute at all, which ParaBank's
     unlabeled inputs are a real example of.
+
+    The positional fallback is scoped to the parent's id when the parent
+    has one (`#parentId > input:nth-of-type(2)`) rather than emitted as a
+    bare `input:nth-of-type(2)` — unscoped, replay applies it page-wide
+    (surface/browser.py's resolve_strategy uses `page.locator(...)`, not
+    something scoped to this element's original container), so it usually
+    matches more than one element across the whole page and
+    resolve_strategy's ambiguity-is-a-miss rule means this "last resort"
+    fallback almost never actually resolves anything.
     """
     props = element.evaluate(_HARVEST_JS)
     strategies: list[LocatorStrategy] = []
     role = _infer_role(props["tag"], props.get("type"))
     label = props.get("labelText") or props.get("ariaLabel")
+    parent_prefix = f"#{props['parentId']} > " if props.get("parentId") else ""
 
     if role and label:
         strategies.append(LocatorStrategy(kind="role", value=f"{role}:{label}"))
@@ -117,32 +151,64 @@ def _harvest_strategies(element) -> list[LocatorStrategy]:
         strategies.append(LocatorStrategy(kind="css", value=f"#{props['id']}"))
     if props.get("nthOfType"):
         strategies.append(
-            LocatorStrategy(kind="css", value=f"{props['tag']}:nth-of-type({props['nthOfType']})")
+            LocatorStrategy(kind="css", value=f"{parent_prefix}{props['tag']}:nth-of-type({props['nthOfType']})")
         )
 
-    return strategies or [LocatorStrategy(kind="css", value=props["tag"])]
+    return strategies or [LocatorStrategy(kind="css", value=f"{parent_prefix}{props['tag']}")]
 
 
-_FILLABLE_TAGS = {"input", "textarea", "select"}
+_TEXT_ENTRY_TAGS = {"input", "textarea"}
+# An <input> whose type is one of these takes a click, never typed text.
+_NON_TEXT_INPUT_TYPES = {"submit", "button", "reset", "image", "checkbox", "radio"}
 
 
 def _acceptable(loc, action_kind: str) -> bool:
     """Reject a resolved candidate that can't actually take the intended
     action — e.g. get_by_text("Username", exact=True) legitimately resolves
     to exactly one element, but it's the <b>Username</b> label, not the
-    <input> next to it, and a `fill` there is a false positive, not a match."""
+    <input> next to it, and a `fill` there is a false positive, not a match.
+
+    Checked per action, not against one shared set of "form-ish" tags. The
+    old version accepted any of input/textarea/select for BOTH fill and
+    select, so `select` on ParaBank's transfer form accepted the
+    `<input type="submit" value="Transfer">` the cascade had landed on and
+    handed it to select_option(), which failed with "Element is not a
+    <select> element" — found by running a real discovery run against that
+    form. A guard whose whole purpose is catching this class of false
+    positive has to distinguish the actions it's guarding.
+    """
     if action_kind not in ("fill", "select"):
         return True
     try:
-        tag = loc.evaluate("el => el.tagName.toLowerCase()")
+        tag, input_type = loc.evaluate(
+            "el => [el.tagName.toLowerCase(), (el.getAttribute('type') || '').toLowerCase()]"
+        )
     except Exception:
         return False
-    return tag in _FILLABLE_TAGS
+    if action_kind == "select":
+        return tag == "select"
+    if tag == "textarea":
+        return True
+    return tag == "input" and input_type not in _NON_TEXT_INPUT_TYPES
 
 
 _SUFFIX_WORDS = re.compile(
     r"\s+(field|box|textbox|input|button|link|dropdown|control|element)s?$", re.IGNORECASE
 )
+
+
+def _xpath_literal(value: str) -> str:
+    """XPath 1.0 has no escape syntax inside string literals, so a value
+    containing both quote characters has to be assembled with concat().
+    A model-supplied description is arbitrary text — "Owner's Name" alone
+    would otherwise produce a malformed expression that silently matches
+    nothing."""
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+    parts = ", ".join(f'"{p}"' if "'" in p else f"'{p}'" for p in re.split(r"(')", value) if p)
+    return f"concat({parts})"
 
 
 def _cascade(page, description: str, action_kind: str):
@@ -167,13 +233,42 @@ def _cascade(page, description: str, action_kind: str):
         except Exception:
             continue
 
-    # Legacy fallback: the nearest <input> after a label-shaped text node.
-    try:
-        loc = page.get_by_text(description, exact=False).locator("xpath=following::input[1]")
-        if loc.count() == 1 and _acceptable(loc, action_kind):
-            return loc, _harvest_strategies(loc)
-    except Exception:
-        pass
+    # Legacy fallback: the nearest form control after a label-shaped text
+    # node — the `<p><b>Label</b></p><input>` and
+    # `<div>From account # <select>` patterns this app is full of, and the
+    # "no clean DOM" case the brief centers on.
+    #
+    # Anchored on the TEXT NODE, not on the element containing it. Both
+    # details were found by running real discovery against ParaBank's
+    # transfer form and verified live on four different pages:
+    #
+    #   - `following::input[1]` matched only <input>, so it walked straight
+    #     past both <select>s and returned the Transfer submit button.
+    #   - Anchoring on the containing element is worse than it looks: "From
+    #     account #" and "to account #" live in the SAME <div>, so both
+    #     descriptions resolve to that one div and both harvest
+    #     `#fromAccountId`. A run recorded that way sets the From dropdown
+    #     twice, never sets To, and still passes its "Transfer Complete!"
+    #     checkpoint — a transfer in the wrong direction reported as
+    #     success. Anchoring on the text node keeps sibling labels distinct.
+    for xpath in (
+        f"(//text()[contains(., {_xpath_literal(description)})])[1]"
+        "/following::*[self::input or self::select or self::textarea][1]",
+        # Permissive backstop: a label whose control is nested INSIDE the
+        # labelled element rather than after it.
+        "xpath=(.//*[self::input or self::select or self::textarea] | "
+        "following::*[self::input or self::select or self::textarea])[1]",
+    ):
+        try:
+            loc = (
+                page.locator(f"xpath={xpath}")
+                if xpath.startswith("(//text()")
+                else page.get_by_text(description, exact=False).locator(xpath)
+            )
+            if loc.count() == 1 and _acceptable(loc, action_kind):
+                return loc, _harvest_strategies(loc)
+        except Exception:
+            continue
 
     return None, []
 
@@ -251,117 +346,198 @@ class AgentLoop:
         succeeded = False
         stuck_reason: str | None = None
         escalation_count = 0
+        last_signature: tuple | None = None
+        repeat_count = 0
         started_at = time.monotonic()
 
-        self.surface.start(entry_url)
         logger.log(
             "run_started",
             goal=goal,
             entry_url=entry_url,
             credential_fields=sorted((credentials or {}).keys()),
         )
+        # Checked before the first navigate, same as replay checks
+        # capability.entry_url before its own surface.start() — otherwise
+        # the very first navigation of every discovery run is unchecked
+        # (every later navigate/click IS checked, via _act and the
+        # post-action check below).
+        if not self.allowlist.permits_url(entry_url):
+            logger.log("allowlist_rejected", url=entry_url, phase="pre-navigate")
+            stuck_reason = f"policy violation: entry_url '{entry_url}' not permitted"
+            logger.log("run_finished", succeeded=False, stuck_reason=stuck_reason)
+            return RunResult(
+                run_id=run_id, goal=goal, entry_url=entry_url, succeeded=False,
+                stuck_reason=stuck_reason, evidence_dir=str(evidence_dir),
+            )
+
         try:
-            for step_num in range(self.stopping.max_steps):
-                if time.monotonic() - started_at > self.stopping.timeout_s:
-                    stuck_reason = "timeout"
-                    logger.log("stopping_condition", condition="timeout")
-                    break
-
-                observation = self.surface.observe()
-                action = self.decider.decide(goal, observation, history_lines, credentials)
-                logged_value = (
-                    "[REDACTED]"
-                    if is_sensitive_field(action.target_description)
-                    else action.value
-                )
-                logger.log(
-                    "decision",
-                    step=step_num,
-                    url=observation.url,
-                    action=action.kind,
-                    target=action.target_description,
-                    value=logged_value,
-                    reason=action.reason,
-                )
-                target_repr = (
-                    action.target_description or action.value or action.expected_text_contains or ""
-                )
-
-                if action.kind == "done":
-                    succeeded = True
-                    transcript.append(
-                        {
-                            "index": step_num,
-                            "action": action.__dict__,
-                            "url_before": observation.url,
-                            "url_after": observation.url,
-                        }
-                    )
-                    break
-
-                if action.kind == "stuck":
-                    screenshot = str(evidence_dir / f"stuck-step{step_num}.png")
-                    try:
-                        self.surface.screenshot(screenshot)
-                    except Exception:
-                        screenshot = None
-                    logger.log("stuck", step=step_num, reason=action.reason, screenshot=screenshot)
-
-                    if not self.escalate_on_stuck or escalation_count >= self.stopping.max_escalations:
-                        stuck_reason = action.reason
+            try:
+                self.surface.start(entry_url)
+            except Exception as exc:
+                # Mirrors replay/executor.py's same guard: a dead/unreachable
+                # entry point shouldn't leak the browser process or skip
+                # trace evidence just because the early return used to sit
+                # outside this try/finally. `else` below means the loop body
+                # never runs against a surface that never started; control
+                # falls through to the outer `finally` (still calls
+                # surface.stop(), safe even after a partial start()) and
+                # then to run_finished/return with stuck_reason already
+                # set, instead of a bare traceback.
+                logger.log("entry_navigation_failed", error=str(exc))
+                stuck_reason = f"entry navigation failed: {exc}"
+            else:
+                for step_num in range(self.stopping.max_steps):
+                    if time.monotonic() - started_at > self.stopping.timeout_s:
+                        stuck_reason = "timeout"
+                        logger.log("stopping_condition", condition="timeout")
                         break
 
-                    escalation_count += 1
-                    request = InterventionRequest(
-                        run_id=run_id,
-                        capability_id=None,
-                        goal=goal,
-                        current_step_id=f"discovery-step-{step_num}",
+                    observation = self.surface.observe()
+                    action = self.decider.decide(goal, observation, history_lines, credentials)
+                    logged_value = (
+                        "[REDACTED]"
+                        if is_sensitive_field(action.target_description)
+                        else action.value
+                    )
+                    logger.log(
+                        "decision",
+                        step=step_num,
+                        url=observation.url,
+                        action=action.kind,
+                        target=action.target_description,
+                        value=logged_value,
                         reason=action.reason,
-                        screenshot_path=screenshot,
-                        url=self.surface.current_url(),
                     )
-                    raise_intervention(request, evidence_dir)
-                    handoff = HandoffController(self.surface)
-                    prompt_operator(request, handoff, logger=logger)
-                    history_lines.append(
-                        f"{step_num + 1}. stuck({action.reason!r}) -> human took over and handed "
-                        f"control back: {handoff.human_actions_log[-1]['diff_summary']}"
+                    target_repr = (
+                        action.target_description or action.value or action.expected_text_contains or ""
                     )
-                    continue
 
-                if not self.allowlist.permits_action(action.kind):
-                    logger.log("allowlist_rejected", step=step_num, action=action.kind)
-                    stuck_reason = f"allowlist rejected action type '{action.kind}'"
-                    break
+                    # Dead-end detection. Keyed on what the action DOES
+                    # (kind + target + value), not on the model's `reason`,
+                    # which varies in wording turn to turn while describing
+                    # the identical action — keying on reason would never
+                    # match and the guard would never fire.
+                    signature = (action.kind, action.target_description, action.value)
+                    if action.kind not in ("done", "stuck"):
+                        if signature == last_signature:
+                            repeat_count += 1
+                        else:
+                            last_signature, repeat_count = signature, 1
+                        if repeat_count >= self.stopping.max_repeated_actions:
+                            stuck_reason = (
+                                f"dead end: repeated {action.kind}({target_repr!r}) "
+                                f"{repeat_count} times with no change in the page"
+                            )
+                            logger.log(
+                                "stopping_condition", condition="no_progress",
+                                action=action.kind, target=action.target_description,
+                                repeats=repeat_count,
+                            )
+                            break
 
-                url_before = observation.url
-                try:
-                    entry = self._act(action, step_num, observation, logger)
-                except AllowlistViolation as exc:
-                    logger.log("policy_violation", step=step_num, phase=exc.phase, reason=str(exc))
-                    stuck_reason = f"policy violation: {exc}"
-                    break
-                transcript.append(entry)
+                    if action.kind == "done":
+                        succeeded = True
+                        transcript.append(
+                            {
+                                "index": step_num,
+                                "action": action.__dict__,
+                                "url_before": observation.url,
+                                "url_after": observation.url,
+                            }
+                        )
+                        break
 
-                if entry.get("resolution_failed"):
-                    outcome = "FAILED — no element resolved for that exact description"
-                elif entry.get("assert_passed") is False:
-                    outcome = "FAILED — expected text not found on the page"
+                    if action.kind == "stuck":
+                        screenshot = str(evidence_dir / f"stuck-step{step_num}.png")
+                        try:
+                            self.surface.screenshot(screenshot)
+                        except Exception:
+                            screenshot = None
+                        logger.log("stuck", step=step_num, reason=action.reason, screenshot=screenshot)
+
+                        if not self.escalate_on_stuck or escalation_count >= self.stopping.max_escalations:
+                            stuck_reason = action.reason
+                            break
+
+                        escalation_count += 1
+                        request = InterventionRequest(
+                            run_id=run_id,
+                            capability_id=None,
+                            goal=goal,
+                            current_step_id=f"discovery-step-{step_num}",
+                            reason=action.reason,
+                            screenshot_path=screenshot,
+                            url=self.surface.current_url(),
+                        )
+                        raise_intervention(request, evidence_dir, scrub=logger.scrub)
+                        handoff = HandoffController(self.surface)
+                        prompt_operator(request, handoff, logger=logger)
+                        # A human just had free rein over a live session —
+                        # they may have navigated anywhere, including
+                        # outside the allowlist. Only the
+                        # checkpoint-equivalent (the diff summary) was
+                        # being trusted before; re-enforce the allowlist on
+                        # wherever they left the session, the same as any
+                        # other navigation.
+                        post_handoff_url = self.surface.current_url()
+                        if not self.allowlist.permits_url(post_handoff_url):
+                            logger.log(
+                                "allowlist_rejected", step=step_num, url=post_handoff_url, phase="post-handoff"
+                            )
+                            stuck_reason = (
+                                f"human handoff left the session outside the allowlist at {post_handoff_url}"
+                            )
+                            break
+                        history_lines.append(
+                            f"{step_num + 1}. stuck({action.reason!r}) -> human took over and handed "
+                            f"control back: {handoff.human_actions_log[-1]['diff_summary']}"
+                        )
+                        continue
+
+                    if not self.allowlist.permits_action(action.kind):
+                        logger.log("allowlist_rejected", step=step_num, action=action.kind)
+                        stuck_reason = f"allowlist rejected action type '{action.kind}'"
+                        break
+
+                    url_before = observation.url
+                    try:
+                        entry = self._act(action, step_num, observation, logger)
+                    except AllowlistViolation as exc:
+                        logger.log("policy_violation", step=step_num, phase=exc.phase, reason=str(exc))
+                        stuck_reason = f"policy violation: {exc}"
+                        break
+                    except Exception as exc:
+                        # Any other live-surface error (a Playwright
+                        # timeout, a click on a detached element, ...) used
+                        # to propagate straight out of run() — the trace
+                        # still saved (finally below), but no RunResult, no
+                        # run_finished line, and a bare traceback at the
+                        # CLI. Treat it the same as any other turn the loop
+                        # can't act on: log it and end the run cleanly
+                        # rather than crash.
+                        logger.log("action_failed", step=step_num, action=action.kind, error=str(exc))
+                        stuck_reason = f"action '{action.kind}' raised: {exc}"
+                        break
+                    transcript.append(entry)
+
+                    if entry.get("resolution_failed"):
+                        outcome = "FAILED — no element resolved for that exact description"
+                    elif entry.get("assert_passed") is False:
+                        outcome = "FAILED — expected text not found on the page"
+                    else:
+                        outcome = "ok"
+                    history_lines.append(f"{step_num + 1}. {action.kind}({target_repr!r}) -> {outcome}")
+
+                    url_after = self.surface.current_url()
+                    if not self.allowlist.permits_url(url_after):
+                        logger.log("allowlist_rejected", step=step_num, url=url_after)
+                        stuck_reason = f"navigated outside allowlist to {url_after}"
+                        break
+                    entry["url_before"] = url_before
+                    entry["url_after"] = url_after
                 else:
-                    outcome = "ok"
-                history_lines.append(f"{step_num + 1}. {action.kind}({target_repr!r}) -> {outcome}")
-
-                url_after = self.surface.current_url()
-                if not self.allowlist.permits_url(url_after):
-                    logger.log("allowlist_rejected", step=step_num, url=url_after)
-                    stuck_reason = f"navigated outside allowlist to {url_after}"
-                    break
-                entry["url_before"] = url_before
-                entry["url_after"] = url_after
-            else:
-                stuck_reason = "max_steps exceeded"
-                logger.log("stopping_condition", condition="max_steps")
+                    stuck_reason = "max_steps exceeded"
+                    logger.log("stopping_condition", condition="max_steps")
         finally:
             self.surface.stop(save_trace_to=str(evidence_dir / "trace.zip"))
 

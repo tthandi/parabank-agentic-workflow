@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -72,9 +72,15 @@ class Locator(BaseModel):
 
 
 class RetryPolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    max_attempts: int = 2
+    # Named for what it actually governs: `_poll_checkpoint` always runs
+    # once before this policy is consulted at all (see replay/executor.py),
+    # so `max_retries=2` means 2 *additional* polls after that first one —
+    # 3 total, not 2. The old name `max_attempts` read as the total and
+    # undercounted by one; kept as a loading alias so the three committed
+    # capability artifacts (which all predate this rename) still validate.
+    max_retries: int = Field(default=2, validation_alias=AliasChoices("max_retries", "max_attempts"))
     backoff_ms: int = 500
 
 
@@ -91,11 +97,37 @@ class Checkpoint(BaseModel):
     timeout_ms: int = 5000
 
 
+class BusinessOutcomeRule(BaseModel):
+    """One (app says this) -> (report this code) mapping for a step.
+
+    `Step.business_outcome_code` + `business_outcome_confirm_text` express
+    exactly one such mapping, which is all the login step needs. Real
+    screens are not always that tidy: ParaBank's Request Loan distinguishes
+    four denial reasons in its own UI ("...not sufficient funds for the
+    given down payment" vs "...cannot grant a loan in that amount with your
+    available funds", both confirmed live). Collapsing those to one code
+    throws away the part the caller actually needs — *why* — which is the
+    same conflation the {success, business_outcome, failure} taxonomy
+    exists to prevent, one level down.
+
+    Rules are evaluated in order, first match wins, so a more specific
+    message can be listed ahead of a more general one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    confirm_text: str
+
+
 _LOCATOR_REQUIRED_ACTIONS = {ActionType.CLICK, ActionType.FILL, ActionType.SELECT}
 
 
 class Step(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # populate_by_name=True lets business_outcome_confirm_text be
+    # constructed via either its own name or its pre-rename alias
+    # (business_outcome_signal) — see the field below.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     id: str
     action: ActionType
@@ -116,6 +148,16 @@ class Step(BaseModel):
     # - business_outcome: a known non-happy-path result (e.g. "invalid
     #   credentials" banner) — report it to the caller as a legitimate
     #   outcome, not a crash
+    # How a SELECT matches its option. Label is the default because it is
+    # what a human sees and what survives a tenant re-skinning the markup.
+    # `value` exists for the opposite case, which is real in the target
+    # environment: the same vendor product deployed for two institutions
+    # can carry translated or re-worded option LABELS over identical
+    # underlying values ("CHECKING"/"Cuenta corriente" for value "0"). A
+    # capability that must survive that keys on the value instead. `index`
+    # is the last resort, for a control whose options carry neither a
+    # stable label nor a stable value.
+    select_by: Literal["label", "value", "index"] = "label"
     on_failure: Literal["hard_fail", "retry", "business_outcome"] = "hard_fail"
     retry: RetryPolicy | None = None
     business_outcome_code: str | None = None  # required when on_failure == business_outcome
@@ -131,8 +173,22 @@ class Step(BaseModel):
     # business_outcome_unknown_code is reported instead — "we don't know
     # what happened" is itself a legitimate, distinct answer, not a reason
     # to guess.
-    business_outcome_signal: str | None = None
+    #
+    # Named business_outcome_confirm_text (not "signal"): the value is a
+    # substring to look for in the page text, not a flag or an error —
+    # "signal" said only that something exists, not what it is or does.
+    # validation_alias keeps the three committed capability artifacts
+    # (recorded under the old name) loading unchanged.
+    business_outcome_confirm_text: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("business_outcome_confirm_text", "business_outcome_signal"),
+    )
     business_outcome_unknown_code: str | None = None
+    # The many-reasons form of the pair above. When non-empty it takes
+    # precedence; the single-rule fields stay for the capabilities already
+    # recorded against them, and because one rule is the common case and
+    # reads better as one field than as a one-element list.
+    business_outcomes: list[BusinessOutcomeRule] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_invariants(self) -> "Step":
@@ -150,13 +206,48 @@ class Step(BaseModel):
             if self.value_param is None and self.value_literal is None:
                 raise ValueError(f"step '{self.id}': action 'navigate' requires value_param or value_literal")
 
-        if self.on_failure == "business_outcome" and not self.business_outcome_code:
-            raise ValueError(f"step '{self.id}': on_failure='business_outcome' requires business_outcome_code")
-        if self.business_outcome_signal and not self.business_outcome_unknown_code:
+        if self.on_failure == "retry" and self.retry is None:
+            raise ValueError(f"step '{self.id}': on_failure='retry' requires a retry policy")
+        if self.on_failure == "business_outcome" and not (
+            self.business_outcome_code or self.business_outcomes
+        ):
             raise ValueError(
-                f"step '{self.id}': business_outcome_signal requires business_outcome_unknown_code "
-                "(what to report when the signal isn't confirmed either)"
+                f"step '{self.id}': on_failure='business_outcome' requires business_outcome_code "
+                "or business_outcomes"
             )
+        if (self.business_outcome_confirm_text or self.business_outcomes) and not (
+            self.business_outcome_unknown_code
+        ):
+            raise ValueError(
+                f"step '{self.id}': a confirming text requires business_outcome_unknown_code "
+                "(what to report when no confirming text is found either)"
+            )
+        # IRREVERSIBLE only, and the asymmetry is the point. Policy
+        # BLOCKS an irreversible step outright, so automation can never
+        # perform it: the only way it completes is a human doing it on the
+        # live session, and the executor recognises that solely by
+        # re-testing this step's checkpoint before retrying
+        # (`just_escalated` in replay/executor.py). With no checkpoint,
+        # escalation is a dead end by construction — the person opens the
+        # account, hands control back, and the replay fails anyway with the
+        # irreversible act already performed. Observed exactly that way
+        # before this existed.
+        #
+        # RISKY is deliberately NOT covered: automation still performs it
+        # once confirmed, so the common path needs no checkpoint. One is
+        # strongly recommended (without it, a DECLINED risky step has the
+        # same dead end), but requiring it would reject a legitimate
+        # confirm-and-go step for a problem it doesn't have.
+        if self.risk is RiskLevel.IRREVERSIBLE and self.checkpoint is None:
+            raise ValueError(
+                f"step '{self.id}': risk='irreversible' requires a checkpoint — policy blocks "
+                "automation from performing it, so a human handoff is the only way it can "
+                "complete, and the checkpoint is the only way replay can tell that it did"
+            )
+
+        codes = [rule.code for rule in self.business_outcomes]
+        if len(codes) != len(set(codes)):
+            raise ValueError(f"step '{self.id}': duplicate codes in business_outcomes: {codes}")
 
         return self
 
@@ -165,7 +256,7 @@ class ParamSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    type: Literal["string", "int", "float", "enum"]
+    type: Literal["string", "int", "float", "bool", "enum"]
     required: bool = True
     description: str = ""
     enum_values: list[str] | None = None
@@ -193,6 +284,25 @@ class OutputSpec(BaseModel):
     item_shape: dict[str, str] | None = None
 
 
+class ReplayStats(BaseModel):
+    """How reliably this capability has actually replayed.
+
+    Recorded rather than estimated: `resolved_via` already tells us which
+    locator strategy won per step per replay, and REPORT.md §4 leans on
+    that as the per-tenant drift signal — but nothing consumed it, so the
+    signal existed and was never read. `fallback_rate` is the share of
+    resolved steps that did NOT win on their primary strategy: a capability
+    drifting from `role` to `css` is measurably more fragile before it
+    breaks outright."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runs: int = 0
+    successes: int = 0
+    fallback_rate: float = 0.0
+    last_run_at: str | None = None
+
+
 class Capability(BaseModel):
     """A reusable, reviewable, agent-invocable automation flow."""
 
@@ -203,6 +313,15 @@ class Capability(BaseModel):
     version: str  # semver; bump on any change to steps/schema
     description: str
     target_app: str  # e.g. "parabank" — see config/allowlist.yaml
+    # May be absolute ("http://host:8080/parabank/index.htm") or
+    # tenant-relative ("/index.htm"). Relative is preferred for anything
+    # recorded from now on: an absolute url bakes ONE tenant's host into
+    # the artifact, so replaying the same capability for a second
+    # institution meant editing the JSON — exactly the "re-recorded per
+    # tenant" outcome the brief's §3.7 asks you to avoid, and something
+    # REPORT.md §4's multi-tenant answer (about locator drift) didn't
+    # address. Absolute values still load and are treated as
+    # already-resolved, so every committed artifact is unaffected.
     entry_url: str
 
     inputs: list[ParamSpec] = Field(default_factory=list)
@@ -214,6 +333,34 @@ class Capability(BaseModel):
     # never the raw transcript itself (see artifact/recorder.py).
     created_from_run_id: str
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    # Review state. Everything records as "draft"; promotion to "approved"
+    # is an explicit human act (`cua approve`). Unattended replay — the
+    # path a scheduler or an AI agent takes with nobody watching — refuses
+    # a draft. Attended replay does not, so a person can exercise and
+    # evaluate a capability before vouching for it, which is the only way
+    # it could ever become approved.
+    #
+    # This is the control a bank actually asks for: not "is this
+    # allowlisted" but "has a human signed off that this automation may run
+    # against production unsupervised". Defaults to draft so the safe state
+    # is the one you get by doing nothing.
+    approval: Literal["draft", "approved"] = "draft"
+    replay_stats: ReplayStats | None = None
+
+    def resolved_entry_url(self, base_url: str | None = None) -> str:
+        """The url replay should actually navigate to.
+
+        An absolute `entry_url` wins outright — including over a supplied
+        `base_url` — because it was recorded as a complete address and
+        silently re-pointing it somewhere else would be a surprising way to
+        send an automation at the wrong institution. Only a relative
+        `entry_url` consults `base_url`; with neither, the raw value is
+        returned and the allowlist rejects it, which is the right failure.
+        """
+        if self.entry_url.startswith(("http://", "https://")) or not base_url:
+            return self.entry_url
+        return base_url.rstrip("/") + "/" + self.entry_url.lstrip("/")
 
     @model_validator(mode="after")
     def _check_invariants(self) -> "Capability":

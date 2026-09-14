@@ -1,0 +1,10 @@
+{
+  "run_id": "replay-c9f0db1c22",
+  "capability_id": "parabank.open-new-account",
+  "goal": "Replay of capability 'parabank.open-new-account' v0.1.0: Logs in and opens a new CHECKING or SAVINGS account, returning the new account number. IRREVERSIBLE: ParaBank has no close-account function, so unattended replay is blocked by policy and always routed to a human.",
+  "current_step_id": "step-6-click",
+  "reason": "risk=irreversible is blocked from unattended replay",
+  "screenshot_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-c9f0db1c22/escalation-step-6-click.png",
+  "url": "http://localhost:8080/parabank/openaccount.htm",
+  "created_at": "2026-09-14T10:16:15.106349+00:00"
+}

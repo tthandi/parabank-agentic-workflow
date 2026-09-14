@@ -108,6 +108,33 @@ class TestEscalate:
         assert result.intervention_path is not None
 
 
+    def test_returns_failure_when_post_handoff_url_is_outside_allowlist(self, tmp_path, monkeypatch):
+        # Same gap as the discovery loop's post-handoff check: only the
+        # checkpoint got re-verified after a human handoff, never the
+        # allowlist, so a human handing the session back from a page
+        # outside policy went unnoticed.
+        surface = FakeSurface()
+
+        def fake_input(prompt=""):
+            surface._url = "https://evil.example.com/took-over"
+            return ""
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        executor = self._executor(attended=True, max_escalations=1)
+        executor.surface = surface
+        logger = RunLogger("test-run", tmp_path)
+        cap = _capability()
+
+        result = executor._escalate(
+            cap, "step-1", tmp_path, logger, escalations_used=0,
+            reason="test reason", expected="x", observed="y",
+        )
+
+        assert result is not None
+        assert result.kind == OutcomeKind.FAILURE
+        assert result.escalated is True
+
+
 class TestPreNavigateBlock:
     def test_navigate_step_off_allowlist_raises_before_goto(self):
         class GotoTrackingPage:
@@ -192,3 +219,61 @@ class TestPostActionBlock:
 
         assert result.kind == OutcomeKind.FAILURE
         assert result.escalated is True
+
+
+def test_exhausted_escalation_still_reports_where_the_intervention_was_written(tmp_path, monkeypatch):
+    """escalated=true with intervention_path=null sent a reviewer looking for
+    a record the result insisted didn't exist. The exhausted-budget branch
+    builds its FAILURE from _failure(), which knows nothing about the
+    intervention raised on the earlier escalation."""
+    import sys
+    from pathlib import Path
+
+    from cua.artifact.schema import (
+        ActionType, Capability, Checkpoint, Locator, LocatorStrategy, RiskLevel, Step,
+    )
+    from cua.replay import executor as executor_module
+    from cua.replay.executor import ReplayExecutor
+    from cua.replay.outcomes import OutcomeKind
+    from cua.safety.allowlist import Allowlist
+    from cua.surface.types import Observation
+
+    monkeypatch.setattr(executor_module, "EVIDENCE_ROOT", tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    # The operator declines, twice: once to escalate, once to exhaust.
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+
+    class Surface:
+        def start(self, entry_url): pass
+        def stop(self, save_trace_to=None): pass
+        def current_url(self): return "http://localhost:8080/parabank/transfer.htm"
+        def screenshot(self, out_path): return out_path
+        def text(self, selector="body"): return "Transfer Funds"
+        def observe(self): return Observation(url=self.current_url(), title="", aria_snapshot="")
+        def resolve(self, locator): return object(), "css"
+
+    cap = Capability(
+        id="parabank.risky-demo", name="Risky demo", version="0.1.0", description="d",
+        target_app="parabank", entry_url="http://localhost:8080/parabank/index.htm",
+        steps=[Step(
+            id="step-1-click", action=ActionType.CLICK, risk=RiskLevel.RISKY,
+            locator=Locator(description="Transfer", strategies=[LocatorStrategy(kind="css", value="#t")]),
+        )],
+        success_checkpoint=Checkpoint(description="done"),
+        created_from_run_id="run-1",
+    )
+    executor = ReplayExecutor(
+        surface=Surface(),
+        allowlist=Allowlist(
+            allowed_domains=["localhost"], allowed_route_prefixes=["/parabank/*"],
+            allowed_actions=["click"], target_app="parabank",
+        ),
+        attended=True, max_escalations=1,
+    )
+
+    result = executor.run(cap, {})
+
+    assert result.kind == OutcomeKind.FAILURE
+    assert result.escalated is True
+    assert result.intervention_path, "escalated=true must point at the intervention it raised"
+    assert Path(result.intervention_path).exists()

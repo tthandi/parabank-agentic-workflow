@@ -1,0 +1,18 @@
+{"ts": "2026-09-14T10:01:47.978302+00:00", "run_id": "replay-5daadb612f", "event_type": "replay_started", "capability_id": "parabank.request-loan", "version": "0.1.0", "params_keys": ["down_payment", "from_account", "loan_amount", "password", "username"]}
+{"ts": "2026-09-14T10:01:48.362110+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:48.389031+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 27}
+{"ts": "2026-09-14T10:01:48.389210+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:48.408440+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 19}
+{"ts": "2026-09-14T10:01:48.408573+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-14T10:01:48.483783+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 75}
+{"ts": "2026-09-14T10:01:48.483929+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-14T10:01:48.530452+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-4-click", "resolved_via": "role", "duration_ms": 47}
+{"ts": "2026-09-14T10:01:48.530601+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-5-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:48.548069+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-5-fill", "resolved_via": "css", "duration_ms": 17}
+{"ts": "2026-09-14T10:01:48.548314+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-6-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:48.557181+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-6-fill", "resolved_via": "css", "duration_ms": 9}
+{"ts": "2026-09-14T10:01:48.557364+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-7-select", "action": "select"}
+{"ts": "2026-09-14T10:01:48.565718+00:00", "run_id": "replay-5daadb612f", "event_type": "step_finished", "step": "step-7-select", "resolved_via": "css", "duration_ms": 8}
+{"ts": "2026-09-14T10:01:48.565863+00:00", "run_id": "replay-5daadb612f", "event_type": "step_started", "step": "step-8-click", "action": "click"}
+{"ts": "2026-09-14T10:01:48.565926+00:00", "run_id": "replay-5daadb612f", "event_type": "policy_confirmed", "step": "step-8-click"}
+{"ts": "2026-09-14T10:01:58.887778+00:00", "run_id": "replay-5daadb612f", "event_type": "business_outcome", "step": "step-8-click", "code": "insufficient_funds_for_down_payment"}

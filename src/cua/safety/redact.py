@@ -20,15 +20,31 @@ from __future__ import annotations
 
 import re
 
-# TODO: tune/extend for the actual data ParaBank surfaces (account numbers,
-# routing numbers, SSNs-shaped strings).
 _PATTERNS: list[re.Pattern] = [
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),  # SSN-shaped
-    re.compile(r"\b\d{9,17}\b"),  # account/routing-number-shaped
+    re.compile(r"\b\d{9,17}\b"),  # account/routing-number, unseparated
+    # Card/account numbers AS RENDERED: 13–19 digits in groups separated by
+    # single spaces or hyphens. This is the common on-screen form in a
+    # banking UI, and the unseparated pattern above never matched it —
+    # "4111111111111111" was redacted while "4111-1111-1111-1111" sailed
+    # straight through, which is the wrong way round for regulated data.
+    re.compile(r"\b(?:\d[ -]?){12,18}\d\b"),
+    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b"),  # email
 ]
 
+# Deliberately NOT shape-matched: dates and phone numbers.
+#
+# A date-of-birth is regulated PII, but a date has no shape that
+# distinguishes a DOB from a transaction date — and transaction dates are
+# the legitimate OUTPUT of this project's one capability (see
+# evidence/replay-bba6a99ea2/result.json). A pattern that redacts them
+# destroys the capability's actual answer to prevent a leak of data these
+# flows never touch, which is a bad trade. Phone numbers have the same
+# problem against amounts and reference numbers. Both are covered by field
+# NAME below instead, which is precise where shape is not.
 _SENSITIVE_FIELD_KEYWORDS = (
     "password",
+    "passcode",
     "pwd",
     "pin",
     "ssn",
@@ -37,8 +53,17 @@ _SENSITIVE_FIELD_KEYWORDS = (
     "cvc",
     "secret",
     "token",
+    "api key",
+    "apikey",
+    "otp",
+    "mfa",
     "credit card",
     "card number",
+    "account number",
+    "routing",
+    "date of birth",
+    "dob",
+    "phone",
 )
 
 

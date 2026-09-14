@@ -1,0 +1,25 @@
+{
+  "kind": "success",
+  "capability_id": "parabank.open-new-account",
+  "capability_version": "0.1.0",
+  "outputs": {
+    "new_account_id": 14898
+  },
+  "business_outcome_code": null,
+  "failed_step_id": null,
+  "expected": null,
+  "observed": null,
+  "recovered_steps": [
+    "step-6-click"
+  ],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "role",
+    "step-5-select": "css"
+  },
+  "escalated": true,
+  "intervention_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-c9f0db1c22/interventions/1789380975106-step-6-click-0.json",
+  "evidence_path": "evidence/replay-c9f0db1c22"
+}

@@ -14,7 +14,8 @@ from pathlib import Path
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from cua.artifact.schema import Locator, LocatorStrategy
-from cua.replay.locator import LocatorResolutionError
+from cua.surface.control import ControlHeldByHumanError, Controller
+from cua.surface.errors import LocatorResolutionError
 from cua.surface.types import Observation
 
 ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy kind)
@@ -27,6 +28,33 @@ class BrowserSurface:
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
+        # Who may act on this session. Flipped by escalation/handoff.py and
+        # enforced here — see surface/control.py for why it lives on the
+        # session rather than on the handoff object.
+        self.controller: Controller = Controller.AUTOMATION
+
+    def set_controller(self, controller: Controller) -> None:
+        self.controller = controller
+
+    def _assert_automation_may_act(self, what: str) -> None:
+        """The single choke point for control transfer, mirroring how the
+        allowlist is enforced at one point rather than at each call site.
+
+        Guards ACTING, not observing: `observe()`/`text()`/`screenshot()`
+        stay open while a human holds control, because handoff itself needs
+        them (HandoffController.resume() observes to diff what the human
+        did) and because evidence capture should never be the thing that
+        stops working mid-incident.
+
+        Known gap: agent/loop.py's `_act` reaches through `.page` directly
+        rather than through this seam, so discovery isn't gated by this.
+        Discovery's handoff is sequentially safe today (control returns
+        before the loop continues); closing the gap properly means routing
+        discovery through the Surface seam, which is the same change
+        REPORT.md §4's surface-agnosticism claim needs.
+        """
+        if self.controller is not Controller.AUTOMATION:
+            raise ControlHeldByHumanError(what)
 
     def start(self, entry_url: str) -> None:
         self._playwright = sync_playwright().start()
@@ -81,6 +109,7 @@ class BrowserSurface:
         matches on heading text that appears before the table does, so the
         very next step raced the fetch and failed with count()==0.
         """
+        self._assert_automation_may_act(f"resolve({strategy.kind})")
         assert self.page is not None
         scope = self.page
         for frame_selector in strategy.frame_path:
@@ -112,40 +141,49 @@ class BrowserSurface:
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.1)
-        return None
 
-    def resolve(self, locator: Locator) -> ResolvedLocator | None:
+    def resolve(self, locator: Locator, wait_ms: int = 3000) -> ResolvedLocator | None:
         """Try each strategy in rank order; return the first that resolves
-        plus which strategy kind won, or None if every strategy failed."""
+        plus which strategy kind won, or None if every strategy failed.
+        `wait_ms` is exposed (rather than hardcoding resolve_strategy's own
+        default) so a test can drive this against a fake page without
+        waiting out a real 3s poll per missing strategy."""
         for strategy in locator.strategies:
-            found = self.resolve_strategy(strategy)
+            found = self.resolve_strategy(strategy, wait_ms=wait_ms)
             if found is not None:
                 return found, strategy.kind
         return None
 
-    def click(self, locator: Locator) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.click()
-        return winning_kind
+    def text(self, selector: str = "body") -> str:
+        """The seam replay/executor.py checkpoints and extraction go
+        through instead of reaching into `.page` directly (see finding
+        #16: REPORT.md #4 claims a desktop `Surface` would need nothing in
+        `replay/` to change, which wasn't true while replay called
+        `self.surface.page.inner_text(...)` itself)."""
+        assert self.page is not None
+        return self.page.inner_text(selector)
 
-    def fill(self, locator: Locator, value: str) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.fill(value)
-        return winning_kind
+    def count(self, selector: str) -> int:
+        assert self.page is not None
+        return self.page.locator(selector).count()
 
-    def select(self, locator: Locator, value: str) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.select_option(value)
-        return winning_kind
+    def is_visible(self, selector: str) -> bool:
+        assert self.page is not None
+        return self.page.locator(selector).is_visible()
+
+    def table_cells(self, row_selector: str, cell_selector: str) -> list[list[str]]:
+        """All rows matching `row_selector`, each as its `cell_selector`
+        cells' inner texts — the one piece of table-reading replay/
+        needed from a raw Playwright Locator (row count + nth + cell
+        texts), pulled behind the seam the same as `text`/`count`."""
+        assert self.page is not None
+        rows = self.page.locator(row_selector)
+        return [rows.nth(i).locator(cell_selector).all_inner_texts() for i in range(rows.count())]
+
+    def goto(self, url: str) -> None:
+        self._assert_automation_may_act("goto")
+        assert self.page is not None
+        self.page.goto(url)
 
     def current_url(self) -> str:
         assert self.page is not None

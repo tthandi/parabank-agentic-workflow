@@ -14,6 +14,7 @@ from cua.artifact.schema import (
     Locator,
     LocatorStrategy,
     ParamSpec,
+    RetryPolicy,
     RiskLevel,
     Step,
 )
@@ -83,14 +84,29 @@ class TestMalformedCapabilityRejection:
         with pytest.raises(ValidationError, match="requires business_outcome_code"):
             Step(id="s1", action=ActionType.CLICK, locator=locator, on_failure="business_outcome")
 
-    def test_business_outcome_signal_without_unknown_code_is_rejected(self):
+    def test_business_outcome_confirm_text_without_unknown_code_is_rejected(self):
         locator = Locator(description="x", strategies=[LocatorStrategy(kind="text", value="x")])
         with pytest.raises(ValidationError, match="business_outcome_unknown_code"):
             Step(
                 id="s1", action=ActionType.CLICK, locator=locator,
                 on_failure="business_outcome", business_outcome_code="c",
-                business_outcome_signal="signal text",
+                business_outcome_confirm_text="confirming text",
             )
+
+    def test_business_outcome_confirm_text_loads_via_the_pre_rename_alias(self):
+        # The three committed capability artifacts predate the
+        # business_outcome_signal -> business_outcome_confirm_text rename
+        # (see schema.py's Step) — they must keep loading under the old key.
+        locator = Locator(description="x", strategies=[LocatorStrategy(kind="text", value="x")])
+        step = Step.model_validate(
+            {
+                "id": "s1", "action": "click", "locator": locator.model_dump(),
+                "on_failure": "business_outcome", "business_outcome_code": "c",
+                "business_outcome_signal": "confirming text",
+                "business_outcome_unknown_code": "unknown",
+            }
+        )
+        assert step.business_outcome_confirm_text == "confirming text"
 
     def test_non_semver_version_is_rejected(self):
         cap_kwargs = dict(_sample_capability())
@@ -109,3 +125,72 @@ class TestMalformedCapabilityRejection:
     def test_unknown_field_is_rejected(self):
         with pytest.raises(ValidationError):
             LocatorStrategy(kind="text", value="x", nonexistent_field="oops")
+
+    def test_on_failure_retry_without_a_retry_policy_is_rejected(self):
+        # Without this, on_failure="retry" with no policy attached
+        # silently never retries (executor.py's `step.retry` check is
+        # falsy) and goes straight to escalation — an invariant that
+        # should be unconstructible, not a quiet no-op.
+        locator = Locator(description="x", strategies=[LocatorStrategy(kind="text", value="x")])
+        with pytest.raises(ValidationError, match="requires a retry policy"):
+            Step(id="s1", action=ActionType.CLICK, locator=locator, on_failure="retry")
+
+
+class TestRetryPolicyLegacyAlias:
+    def test_loads_the_pre_rename_max_attempts_key(self):
+        # The three committed capability artifacts predate the
+        # max_attempts -> max_retries rename (see schema.py's RetryPolicy) —
+        # they must keep loading under the old key.
+        policy = RetryPolicy.model_validate({"max_attempts": 4, "backoff_ms": 10})
+        assert policy.max_retries == 4
+
+    def test_constructs_via_either_name(self):
+        assert RetryPolicy(max_attempts=3).max_retries == 3
+        assert RetryPolicy(max_retries=3).max_retries == 3
+
+
+class TestIrreversibleRequiresCheckpoint:
+    """Policy BLOCKS an irreversible step, so automation can never perform
+    it: the only way it completes is a human doing it on the live session,
+    and replay recognises that solely by re-testing the step's checkpoint
+    before retrying. With no checkpoint the handoff dead-ends — the person
+    opens the account, hands control back, and the replay fails anyway with
+    the irreversible act already done. Observed exactly that way against the
+    live app before this invariant existed."""
+
+    @staticmethod
+    def _step(risk, checkpoint=None):
+        from cua.artifact.schema import ActionType, Locator, LocatorStrategy, Step
+
+        return Step(
+            id="s1", action=ActionType.CLICK,
+            locator=Locator(description="Open New Account",
+                            strategies=[LocatorStrategy(kind="role", value="button:Open New Account")]),
+            risk=risk, checkpoint=checkpoint,
+        )
+
+    def test_irreversible_without_a_checkpoint_is_rejected(self):
+        from pydantic import ValidationError
+
+        from cua.artifact.schema import RiskLevel
+
+        with pytest.raises(ValidationError, match="requires a checkpoint"):
+            self._step(RiskLevel.IRREVERSIBLE)
+
+    def test_irreversible_with_a_checkpoint_is_accepted(self):
+        from cua.artifact.schema import Checkpoint, RiskLevel
+
+        step = self._step(
+            RiskLevel.IRREVERSIBLE,
+            Checkpoint(description="opened", expected_text_contains="Account Opened!"),
+        )
+        assert step.risk is RiskLevel.IRREVERSIBLE
+
+    def test_risky_without_a_checkpoint_is_still_allowed(self):
+        # Deliberately not covered: automation still performs a RISKY step
+        # once confirmed, so the common path needs no checkpoint. Requiring
+        # one would reject a legitimate confirm-and-go step for a problem it
+        # doesn't have.
+        from cua.artifact.schema import RiskLevel
+
+        assert self._step(RiskLevel.RISKY).checkpoint is None
