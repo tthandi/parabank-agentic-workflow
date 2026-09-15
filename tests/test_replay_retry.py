@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import pytest
 
-from cua.replay import executor as executor_module
 from cua.artifact.schema import (
     ActionType,
     Capability,
@@ -30,6 +29,7 @@ from cua.artifact.schema import (
     RetryPolicy,
     Step,
 )
+from cua.replay import executor as executor_module
 from cua.replay.executor import ReplayExecutor
 from cua.replay.outcomes import OutcomeKind
 from cua.safety.allowlist import Allowlist

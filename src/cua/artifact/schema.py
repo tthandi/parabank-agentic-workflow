@@ -24,7 +24,7 @@ Design notes (expand on these in REPORT.md #2):
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 
@@ -191,7 +191,7 @@ class Step(BaseModel):
     business_outcomes: list[BusinessOutcomeRule] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_invariants(self) -> "Step":
+    def _check_invariants(self) -> Step:
         if self.action in _LOCATOR_REQUIRED_ACTIONS and self.locator is None:
             raise ValueError(f"step '{self.id}': action '{self.action.value}' requires a locator")
 
@@ -269,6 +269,53 @@ class ParamSpec(BaseModel):
     secret: bool = False
 
 
+class RowFilter(BaseModel):
+    """Keep only rows where `field` compares against an input param."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    op: Literal["gt", "gte", "lt", "lte", "eq", "ne"]
+    param: str
+
+
+class TableSpec(BaseModel):
+    """How to read a repeating region into typed rows.
+
+    This is what finally removes the last app-specific knowledge from
+    `replay/`. Extraction used to be a hand-written method gated on one
+    capability id, with `#transactionTable`, `#noTransactions` and `td`
+    literal in the executor — so REPORT §4's claim that a desktop Surface
+    would need no change under `replay/` was not true, whatever the module
+    boundaries said. A capability now declares its own table and the engine
+    stays capability-agnostic.
+
+    `empty_indicator` is the load-bearing field: a table populated by a
+    later fetch is indistinguishable from a genuinely empty one unless the
+    app itself says which, and reporting "zero rows" for "still loading" is
+    the misclassification the outcome taxonomy exists to prevent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_locator: Locator
+    cell_selector: str = "td"
+    # Output field name -> zero-based cell index.
+    columns: dict[str, int]
+    # Fields parsed as money/number rather than text. Presentation
+    # ("$1,234.56") is stripped before parsing.
+    numeric_fields: list[str] = Field(default_factory=list)
+    # Rows where the first-listed of these cells is non-empty take that
+    # field's name as `direction_field`'s value — the debit/credit column
+    # pair that table-based banking UIs use instead of a signed amount.
+    direction_from: list[str] = Field(default_factory=list)
+    direction_field: str | None = None
+    amount_field: str | None = None
+    empty_indicator: Locator | None = None
+    ready_timeout_ms: int = 3000
+    row_filter: RowFilter | None = None
+
+
 class OutputSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -282,6 +329,12 @@ class OutputSpec(BaseModel):
     # capability) doesn't fit a bare scalar — added after that was the first
     # real capability recorded, not designed in up front.
     item_shape: dict[str, str] | None = None
+    # For type == "array": how to read the rows (see TableSpec).
+    table: TableSpec | None = None
+    # For a scalar derived from another output rather than read off the page,
+    # e.g. match_count = len(matching_transactions).
+    derived_from: str | None = None
+    derive: Literal["count"] | None = None
 
 
 class ReplayStats(BaseModel):
@@ -324,6 +377,24 @@ class Capability(BaseModel):
     # already-resolved, so every committed artifact is unaffected.
     entry_url: str
 
+    # Mid-flow session expiry, which the brief names as a runtime condition
+    # and nothing detected: an expired session silently fails the NEXT
+    # checkpoint, so the caller gets "checkpoint not met" for a step that was
+    # fine and a debuggable-looking failure that points at the wrong place.
+    # When this checkpoint's text appears at any point in the run, the run
+    # stops and reports `session_expired` — a business outcome the caller can
+    # act on (re-authenticate and re-invoke), not a hard failure.
+    # Business-outcome code for "the flow worked and found nothing". A
+    # filtered row set that comes back empty is a legitimate answer, not a
+    # failure — but only the capability knows what to call it, so the engine
+    # no longer guesses (it used to hardcode one capability's id).
+    empty_result_code: str | None = None
+    session_guard: Checkpoint | None = None
+    # How this capability answers an unexpected confirm()/alert(). Dismiss is
+    # the conservative default; a flow whose own confirmation dialog is part
+    # of the happy path sets "accept".
+    on_dialog: Literal["dismiss", "accept"] = "dismiss"
+
     inputs: list[ParamSpec] = Field(default_factory=list)
     outputs: list[OutputSpec] = Field(default_factory=list)
     steps: list[Step]
@@ -332,7 +403,7 @@ class Capability(BaseModel):
     # Provenance back to the discovery run that produced this artifact —
     # never the raw transcript itself (see artifact/recorder.py).
     created_from_run_id: str
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     # Review state. Everything records as "draft"; promotion to "approved"
     # is an explicit human act (`cua approve`). Unattended replay — the
@@ -363,9 +434,18 @@ class Capability(BaseModel):
         return base_url.rstrip("/") + "/" + self.entry_url.lstrip("/")
 
     @model_validator(mode="after")
-    def _check_invariants(self) -> "Capability":
+    def _check_invariants(self) -> Capability:
         if not _SEMVER_RE.match(self.version):
             raise ValueError(f"version '{self.version}' is not valid semver (expected N.N.N)")
+
+        output_names = {o.name for o in self.outputs}
+        for out in self.outputs:
+            if out.derived_from and out.derived_from not in output_names:
+                raise ValueError(
+                    f"output '{out.name}' derives from '{out.derived_from}', which is not a declared output"
+                )
+            if bool(out.derived_from) != bool(out.derive):
+                raise ValueError(f"output '{out.name}': derived_from and derive must be set together")
 
         declared = {p.name for p in self.inputs}
         for step in self.steps:

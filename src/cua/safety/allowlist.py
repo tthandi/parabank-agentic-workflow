@@ -41,7 +41,7 @@ class Allowlist:
     target_app: str | None = None
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "Allowlist":
+    def from_yaml(cls, path: str | Path) -> Allowlist:
         data = yaml.safe_load(Path(path).read_text())
         return cls(
             allowed_domains=data.get("allowed_domains", []),

@@ -9,15 +9,15 @@ routes through the same escalation mechanism the discovery loop uses
 (escalation/*), not a bare failure return. See _escalate() below and
 REPORT.md #5.
 
-Capability-specific output extraction: the generic replay loop below (step
-walking, locator fallback, checkpoint verification, risk gating, retry,
-escalation) is capability-agnostic. Turning a resolved `#transactionTable`
-into typed, filtered rows is not — it's specific to this one capability's
-known table shape. A more general design would let a capability declare a
-small extraction/transform spec in its schema; with one capability
-recorded so far, a hand-written method gated on capability.id is the
-honest, proportionate version of that (see REPORT.md #7 for what a general
-version would need).
+This module is capability-agnostic, and now genuinely so: it contains no
+selector, no capability id, and no knowledge of any particular app. Output
+extraction reads whatever a capability declares — a scalar via
+`OutputSpec.source_locator`, typed rows via `OutputSpec.table`
+(`schema.TableSpec`), a count via `derived_from`/`derive`. That was
+previously a hand-written method gated on one capability's id, with
+`#transactionTable` and `#noTransactions` literal in this file, which made
+REPORT.md §4's claim — that a desktop Surface would need nothing here to
+change — untrue whatever the module boundaries said.
 """
 
 from __future__ import annotations
@@ -43,19 +43,20 @@ from cua.surface.browser import BrowserSurface
 
 EVIDENCE_ROOT = Path(__file__).resolve().parents[3] / "evidence"
 
-_FIND_TRANSACTIONS_CAPABILITY_ID = "parabank.find-transactions-over-amount"
-
-
 class ParamValidationError(Exception):
     pass
 
 
-class TransactionsNotReadyError(Exception):
-    """Raised when neither real rows nor the app's own #noTransactions
-    indicator appeared before the extraction timeout — "still loading" is
-    not the same claim as "genuinely zero transactions," and reporting
-    match_count=0 for it is exactly the misclassification this exists to
-    prevent (see _wait_for_transactions_ready)."""
+class TableNotReadyError(Exception):
+    """Raised when neither rows nor the app's own empty-state indicator
+    appeared before the extraction timeout — "still loading" is not the same
+    claim as "genuinely zero rows", and reporting an empty result for it is
+    exactly the misclassification this exists to prevent (see _table_ready)."""
+
+
+# Kept as an alias: the old name is the one existing tests and any external
+# caller import.
+TransactionsNotReadyError = TableNotReadyError
 
 
 class OutputContractError(Exception):
@@ -111,57 +112,64 @@ def _validate_params(capability: Capability, params: dict) -> None:
         raise ParamValidationError(f"unknown param(s) not declared on this capability: {sorted(unknown)}")
 
 
-def _wait_for_transactions_ready(surface, timeout_ms: int = 3000) -> bool:
-    """The #transactionTable *element* is present as soon as the page
-    renders, but its rows are populated by a later async fetch — the same
-    AJAX-timing hazard surface/browser.py's resolve_strategy exists for,
-    except here the container itself always satisfies a naive "exists"
-    check, so that fix alone doesn't cover it. Poll for either real rows or
-    the app's own #noTransactions indicator (confirmed live: a <p> the page
-    shows for a genuinely empty account) so "still loading" isn't
-    misread as "zero transactions," a real business outcome. Returns
-    whether either signal appeared — the caller decides what a timeout
-    means (see _read_transactions), rather than this silently returning
-    either way. Takes a `surface` (BrowserSurface.count/is_visible), not a
-    raw Playwright page — see finding #16."""
-    deadline = time.monotonic() + timeout_ms / 1000
+def _table_ready(surface, spec, resolve) -> bool:
+    """Wait until the table has rows, or the app says it has none.
+
+    A container element exists as soon as the page renders; its rows arrive
+    with a later fetch. Polling for EITHER real rows or the app's own
+    empty-state indicator is what keeps "still loading" from being reported
+    as the legitimate "zero rows" business outcome.
+    """
+    deadline = time.monotonic() + spec.ready_timeout_ms / 1000
     while time.monotonic() < deadline:
-        if surface.count("#transactionTable tbody tr") > 0:
-            return True
-        if surface.is_visible("#noTransactions"):
-            return True
+        try:
+            if surface.count_matching(spec.row_locator) > 0:
+                return True
+        except Exception:
+            pass
+        if spec.empty_indicator is not None:
+            try:
+                resolve(surface, spec.empty_indicator)
+                return True
+            except LocatorResolutionError:
+                pass
         time.sleep(0.1)
     return False
 
 
-def _read_transactions(surface) -> list[dict]:
-    if not _wait_for_transactions_ready(surface):
-        raise TransactionsNotReadyError(
-            "neither #transactionTable rows nor #noTransactions appeared before the timeout"
+def _read_table(surface, spec) -> list[dict]:
+    if not _table_ready(surface, spec, resolve_with_fallback):
+        raise TableNotReadyError(
+            f"neither rows for {spec.row_locator.description!r} nor its empty-state "
+            "indicator appeared before the timeout"
         )
-    results: list[dict] = []
-    for cells in surface.table_cells("#transactionTable tbody tr", "td"):
-        if len(cells) < 4:
+    rows: list[dict] = []
+    for cells in surface.table_cells_for(spec.row_locator, spec.cell_selector):
+        if spec.columns and len(cells) <= max(spec.columns.values()):
             continue
-        date, description, debit_text, credit_text = cells[0], cells[1], cells[2].strip(), cells[3].strip()
-        if debit_text:
-            amount, direction = _parse_amount(debit_text), "debit"
-        elif credit_text:
-            amount, direction = _parse_amount(credit_text), "credit"
-        else:
+        row: dict = {}
+        for field, index in spec.columns.items():
+            raw = cells[index].strip()
+            row[field] = _parse_amount(raw) if field in spec.numeric_fields else raw
+
+        if spec.direction_from and spec.direction_field:
+            chosen = next((f for f in spec.direction_from if row.get(f) not in (None, "")), None)
+            if chosen is None:
+                continue
+            row[spec.direction_field] = chosen
+            if spec.amount_field:
+                row[spec.amount_field] = row[chosen]
+            for field in spec.direction_from:
+                row.pop(field, None)
+
+        if spec.amount_field and row.get(spec.amount_field) is None:
+            # A cell that isn't a plain amount — a placeholder, a
+            # locale-formatted value. Skip the row rather than fail the whole
+            # extraction: the table already passed its readiness check, so
+            # this is one odd row, not a broken surface.
             continue
-        if amount is None:
-            # A cell that isn't a plain amount — a placeholder like "-",
-            # a locale-formatted value, anything _parse_amount can't
-            # parse. Skip the row rather than raise: this table has
-            # already passed its checkpoint/ready-check, so an unparseable
-            # cell is a shape surprise in one row, not a reason to fail
-            # the whole extraction and write no result at all.
-            continue
-        results.append(
-            {"date": date.strip(), "description": description.strip(), "amount": amount, "direction": direction}
-        )
-    return results
+        rows.append(row)
+    return rows
 
 
 def _parse_amount(text: str) -> float | None:
@@ -173,6 +181,23 @@ def _parse_amount(text: str) -> float | None:
 
 _TRUTHY = {"true", "yes", "y", "on", "1", "enabled", "approved"}
 _FALSY = {"false", "no", "n", "off", "0", "disabled", "denied"}
+
+
+_FILTER_OPS = {
+    "gt": lambda a, b: a > b, "gte": lambda a, b: a >= b,
+    "lt": lambda a, b: a < b, "lte": lambda a, b: a <= b,
+    "eq": lambda a, b: a == b, "ne": lambda a, b: a != b,
+}
+
+
+def _filter_rows(rows: list[dict], row_filter, params: dict) -> list[dict]:
+    if row_filter is None:
+        return rows
+    threshold = params.get(row_filter.param)
+    if threshold is None:
+        return rows
+    op = _FILTER_OPS[row_filter.op]
+    return [r for r in rows if r.get(row_filter.field) is not None and op(r[row_filter.field], threshold)]
 
 
 def _coerce_output(text: str, spec) -> object:
@@ -267,6 +292,7 @@ class ReplayExecutor:
         attended: bool = True,
         max_escalations: int = 1,
         require_approval: bool = False,
+        deadline_s: float | None = 900.0,
     ) -> None:
         self.surface = surface
         self.allowlist = allowlist
@@ -282,6 +308,11 @@ class ReplayExecutor:
         # earn approval, so gating that path would make approval
         # unreachable.
         self.require_approval = require_approval
+        # A whole-run ceiling. Per-checkpoint timeouts are each bounded, but
+        # nothing bounded their sum: a capability with twenty steps against a
+        # degraded app could sit for many minutes before anyone learned it was
+        # in trouble. None disables it.
+        self.deadline_s = deadline_s
         self._last_intervention_path: str | None = None
 
     def run(self, capability: Capability, params: dict, base_url: str | None = None) -> ReplayResult:
@@ -374,10 +405,11 @@ class ReplayExecutor:
         recovered_steps: list[str] = []
         resolved_via: dict[str, str] = {}
         escalations_used = 0
-        self._last_intervention_path: str | None = None
+        self._last_intervention_path = None
         # Tracked so the outer safety net below can attribute an unexpected
         # failure to a step rather than reporting it against nothing.
         current_phase = "entry"
+        started_at = time.monotonic()
 
         try:
             try:
@@ -392,11 +424,25 @@ class ReplayExecutor:
                     expected="target reachable", observed=str(exc),
                 ), logger
 
+            # Tell the surface how this capability answers a dialog, if it
+            # is one that can hear it (a fake surface in a unit test is not).
+            if hasattr(self.surface, "dialog_action"):
+                self.surface.dialog_action = capability.on_dialog
+
             step_index = 0
             just_escalated = False
             while step_index < len(capability.steps):
                 step = capability.steps[step_index]
                 current_phase = step.id
+
+                if self.deadline_s is not None and time.monotonic() - started_at > self.deadline_s:
+                    logger.log("deadline_exceeded", step=step.id, deadline_s=self.deadline_s)
+                    return self._failure(
+                        capability, evidence_dir, failed_step_id=step.id,
+                        expected=f"run completes within {self.deadline_s}s",
+                        observed=f"still running at step '{step.id}' after {self.deadline_s}s",
+                        resolved_via=resolved_via, recovered_steps=recovered_steps,
+                    ), logger
 
                 # A human may have already gotten the app into the state
                 # this step was trying to reach (e.g. they manually
@@ -432,6 +478,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
 
@@ -448,6 +499,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
                 if handling == "require_confirmation":
@@ -483,6 +539,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
                 except AllowlistViolation as exc:
@@ -495,6 +556,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
                 except MissingValueError as exc:
@@ -507,6 +573,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
                 except Exception as exc:
@@ -536,8 +607,32 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
+
+                for dialog in (self.surface.drain_dialogs() if hasattr(self.surface, "drain_dialogs") else []):
+                    logger.log("dialog_handled", step=step.id, **dialog)
+                    if step.id not in recovered_steps:
+                        recovered_steps.append(step.id)
+
+                if capability.session_guard and self._checkpoint_holds(capability.session_guard):
+                    logger.log("session_expired", step=step.id)
+                    return ReplayResult(
+                        kind=OutcomeKind.BUSINESS_OUTCOME,
+                        capability_id=capability.id,
+                        capability_version=capability.version,
+                        business_outcome_code="session_expired",
+                        resolved_via=resolved_via,
+                        recovered_steps=recovered_steps,
+                        escalated=escalations_used > 0,
+                        intervention_path=self._last_intervention_path,
+                        evidence_path=_evidence_relpath(evidence_dir),
+                    ), logger
 
                 current_url = self.surface.current_url()
                 try:
@@ -552,6 +647,11 @@ class ReplayExecutor:
                     if outcome is not None:
                         return outcome, logger
                     escalations_used += 1
+                    # Closes the step_started this iteration opened. Without
+                    # it the JSONL carries a step_started with no terminal
+                    # event, and step pairs stop balancing exactly on the
+                    # runs a reader is most likely to be reading.
+                    logger.log("step_retrying", step=step.id, after_escalation=True)
                     just_escalated = True
                     continue
 
@@ -559,7 +659,12 @@ class ReplayExecutor:
                     ok = self._poll_checkpoint(step.checkpoint)
                     if not ok and step.on_failure == "retry" and step.retry:
                         for _attempt in range(step.retry.max_retries):
-                            time.sleep(step.retry.backoff_ms / 1000)
+                            # Exponential, not constant: the field is named
+                            # backoff and a fixed sleep is not one. A
+                            # transient AJAX table that missed a 500ms window
+                            # is no likelier to make the next identical one;
+                            # doubling actually widens the window.
+                            time.sleep(step.retry.backoff_ms * (2 ** _attempt) / 1000)
                             if self._poll_checkpoint(step.checkpoint):
                                 ok = True
                                 recovered_steps.append(step.id)
@@ -646,7 +751,7 @@ class ReplayExecutor:
                 try:
                     outputs = self._compute_outputs(capability, params)
                     break
-                except TransactionsNotReadyError as exc:
+                except TableNotReadyError as exc:
                     # "Still loading" is not the same claim as "genuinely
                     # zero transactions" — escalate the same as any other
                     # unrecoverable extraction condition rather than
@@ -655,7 +760,7 @@ class ReplayExecutor:
                     outcome = self._escalate(
                         capability, "extraction", evidence_dir, logger, escalations_used,
                         reason=str(exc),
-                        expected="transaction rows or #noTransactions to appear",
+                        expected="table rows or the app's empty-state indicator to appear",
                         observed="neither appeared before the timeout",
                         resolved_via=resolved_via, recovered_steps=recovered_steps,
                     )
@@ -688,13 +793,18 @@ class ReplayExecutor:
                 "outputs", **{k: (v if not isinstance(v, list) else f"{len(v)} rows") for k, v in outputs.items()}
             )
 
-            if capability.id == _FIND_TRANSACTIONS_CAPABILITY_ID and outputs.get("match_count") == 0:
-                logger.log("business_outcome", code="no_matching_transactions")
+            empty_code = capability.empty_result_code
+            if empty_code and any(
+                spec.type == "array" and not outputs.get(spec.name)
+                for spec in capability.outputs
+                if spec.table is not None
+            ):
+                logger.log("business_outcome", code=empty_code)
                 return ReplayResult(
                     kind=OutcomeKind.BUSINESS_OUTCOME,
                     capability_id=capability.id,
                     capability_version=capability.version,
-                    business_outcome_code="no_matching_transactions",
+                    business_outcome_code=empty_code,
                     outputs=outputs,
                     resolved_via=resolved_via,
                     recovered_steps=recovered_steps,
@@ -780,6 +890,11 @@ class ReplayExecutor:
         if step.action == ActionType.ASSERT:
             return None  # verified via step.checkpoint, handled by the caller
 
+        # The schema guarantees a locator for click/fill/select (see
+        # Step._check_invariants); this restates it for the type checker
+        # and turns a hand-edited artifact into a legible error.
+        if step.locator is None:
+            raise MissingValueError(f"step '{step.id}': action '{step.action.value}' needs a locator")
         resolved, via = resolve_with_fallback(self.surface, step.locator)
         if step.action == ActionType.CLICK:
             # Pre-click check for anchors: read href off the resolved
@@ -843,34 +958,22 @@ class ReplayExecutor:
         return True
 
     def _compute_outputs(self, capability: Capability, params: dict) -> dict:
-        # Capability-specific extractor first: a filtered, typed row set out
-        # of a known table shape is not something a generic reader can
-        # infer (see this module's docstring).
-        if capability.id == _FIND_TRANSACTIONS_CAPABILITY_ID:
-            threshold = float(params["min_amount"])
-            all_txns = _read_transactions(self.surface)
-            matches = [t for t in all_txns if t["amount"] > threshold]
-            return {"matching_transactions": matches, "match_count": len(matches)}
-
-        # Generic path: an output that declares WHERE to read itself gets
-        # read, with no per-capability branch. `OutputSpec.source_locator`
-        # was in the schema from the start, is null in every committed
-        # artifact, and was read by nothing — the same dead-field problem
-        # `Checkpoint.locator` had. This is what makes a new capability
-        # need no executor change at all (see REPORT.md §4's claim about
-        # replay staying capability-agnostic).
+        """Read every declared output. No capability-specific branch, and no
+        app-specific selector anywhere in this module — a capability carries
+        its own table shape (schema.TableSpec) and its own scalar locators."""
         outputs: dict = {}
         for spec in capability.outputs:
-            if spec.source_locator is None:
-                continue
-            if spec.type == "array":
-                # An array needs to know how rows map to `item_shape`,
-                # which one element's text can't tell us. Left to a
-                # capability-specific extractor; the contract check below
-                # reports it rather than silently omitting it.
-                continue
-            resolved, _via = resolve_with_fallback(self.surface, spec.source_locator)
-            outputs[spec.name] = _coerce_output(resolved.inner_text(), spec)
+            if spec.type == "array" and spec.table is not None:
+                rows = _read_table(self.surface, spec.table)
+                outputs[spec.name] = _filter_rows(rows, spec.table.row_filter, params)
+            elif spec.source_locator is not None:
+                resolved, _via = resolve_with_fallback(self.surface, spec.source_locator)
+                outputs[spec.name] = _coerce_output(resolved.inner_text(), spec)
+
+        # Derived outputs last, so what they derive from already exists.
+        for spec in capability.outputs:
+            if spec.derive == "count" and spec.derived_from in outputs:
+                outputs[spec.name] = len(outputs[spec.derived_from])
         return outputs
 
     def _safe_current_url(self) -> str:
@@ -913,9 +1016,10 @@ class ReplayExecutor:
         still carries them instead of reporting the two steps that
         resolved before the failure as if nothing had (see `_failure`).
         """
-        screenshot = str(evidence_dir / f"escalation-{step_id}.png")
+        shot_path = str(evidence_dir / f"escalation-{step_id}.png")
+        screenshot: str | None = shot_path
         try:
-            self.surface.screenshot(screenshot)
+            self.surface.screenshot(shot_path)
         except Exception:
             screenshot = None
 

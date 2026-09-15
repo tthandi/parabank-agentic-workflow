@@ -37,3 +37,18 @@ class ControlHeldByHumanError(Exception):
             f"automation attempted '{what}' while a human holds control of this session; "
             "resume() must be called before automation acts again"
         )
+
+
+class SurfaceNotStartedError(RuntimeError):
+    """Raised when a surface is driven before `start()` or after `stop()`.
+
+    Replaces nine bare `assert self.page is not None`. `assert` is stripped
+    under `python -O`, so the clear invariant became an `AttributeError` on
+    `None` from somewhere deeper — precisely when a legible error matters
+    most. A real exception also survives being caught and classified by the
+    replay executor's taxonomy instead of vanishing."""
+
+    def __init__(self, what: str) -> None:
+        super().__init__(
+            f"surface has no live page for '{what}' — start() was not called, or stop() already was"
+        )

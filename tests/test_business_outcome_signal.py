@@ -123,7 +123,13 @@ def test_reports_login_state_unknown_when_neither_signal_is_present():
 def _multi_rule_capability(steps_text: str):
     """A step that can report one of three reasons, plus 'we don't know'."""
     from cua.artifact.schema import (
-        ActionType, BusinessOutcomeRule, Capability, Checkpoint, Locator, LocatorStrategy, Step,
+        ActionType,
+        BusinessOutcomeRule,
+        Capability,
+        Checkpoint,
+        Locator,
+        LocatorStrategy,
+        Step,
     )
 
     return Capability(

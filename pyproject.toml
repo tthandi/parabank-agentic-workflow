@@ -17,6 +17,8 @@ dev = [
     "pytest>=8.0",
     "pytest-playwright>=0.5",
     "requests>=2.31",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [project.scripts]
@@ -28,3 +30,42 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+# E/F: correctness. I: import order, which is otherwise argued about in
+# review. B: bugbear, which catches the mutable-default and loop-variable
+# classes of bug this project has actually shipped twice. UP: don't let the
+# codebase drift backwards from the 3.11+ syntax it already uses.
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = [
+    "E501",  # line length is checked by the formatter, not the linter
+    "B008",  # click decorators legitimately call functions in defaults
+    # UP042 wants StrEnum over (str, Enum). Declined: StrEnum changes
+    # str(Member) from "ActionType.CLICK" to "click", and these enums are
+    # serialized into committed artifacts and every log line. A lint rule is
+    # not a reason to change what already-written evidence means.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Demo scripts deliberately import after sys.path/dotenv setup, which is
+# what makes them runnable from anywhere without installing the package.
+"scripts/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/cua"]
+ignore_missing_imports = true
+# Deliberately not --strict. The value here is catching the None-flows and
+# wrong-type-through-a-seam bugs this project has actually had (a float
+# handed to fill(), an unguarded Optional), not annotating every local.
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true

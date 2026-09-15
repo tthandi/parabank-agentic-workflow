@@ -11,11 +11,17 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    FrameLocator,
+    Page,
+    Playwright,
+    sync_playwright,
+)
 
 from cua.artifact.schema import Locator, LocatorStrategy
-from cua.surface.control import ControlHeldByHumanError, Controller
-from cua.surface.errors import LocatorResolutionError
+from cua.surface.control import ControlHeldByHumanError, Controller, SurfaceNotStartedError
 from cua.surface.types import Observation
 
 ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy kind)
@@ -24,7 +30,7 @@ ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy ki
 class BrowserSurface:
     def __init__(self, headless: bool = False) -> None:
         self.headless = headless
-        self._playwright = None
+        self._playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
@@ -32,9 +38,33 @@ class BrowserSurface:
         # enforced here — see surface/control.py for why it lives on the
         # session rather than on the handoff object.
         self.controller: Controller = Controller.AUTOMATION
+        # Dialogs seen since start(), drained by the replay executor.
+        self.dialogs: list[dict] = []
+        self.dialog_action: str = "dismiss"
+
+    def _on_dialog(self, dialog) -> None:
+        self.dialogs.append({"type": dialog.type, "message": dialog.message, "action": self.dialog_action})
+        try:
+            dialog.accept() if self.dialog_action == "accept" else dialog.dismiss()
+        except Exception:
+            pass
+
+    def drain_dialogs(self) -> list[dict]:
+        """Hand over what was seen and reset. The caller decides what a
+        dialog means; the surface only guarantees one never wedges a step."""
+        seen, self.dialogs = self.dialogs, []
+        return seen
 
     def set_controller(self, controller: Controller) -> None:
         self.controller = controller
+
+    def _require_page(self) -> Page:
+        """One guard instead of nine asserts (see SurfaceNotStartedError)."""
+        if self.page is None:
+            import inspect
+
+            raise SurfaceNotStartedError(inspect.stack()[1].function)
+        return self.page
 
     def _assert_automation_may_act(self, what: str) -> None:
         """The single choke point for control transfer, mirroring how the
@@ -57,11 +87,18 @@ class BrowserSurface:
             raise ControlHeldByHumanError(what)
 
     def start(self, entry_url: str) -> None:
-        self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(headless=self.headless)
+        playwright = self._playwright = sync_playwright().start()
+        self.browser = playwright.chromium.launch(headless=self.headless)
         self.context = self.browser.new_context()
         self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
         self.page = self.context.new_page()
+        # An unexpected confirm()/alert() is one of the runtime conditions
+        # the brief names, and nothing handled it: Playwright leaves a dialog
+        # open, the step blocks until its timeout, and the failure reads as a
+        # locator problem rather than "the app asked a question". Dismiss by
+        # default — the conservative answer to a question nobody asked for —
+        # and record every one so replay can report it rather than swallow it.
+        self.page.on("dialog", self._on_dialog)
         self.page.goto(entry_url)
 
     def stop(self, save_trace_to: str | None = None) -> None:
@@ -85,12 +122,12 @@ class BrowserSurface:
             self.context = self.browser = self.page = self._playwright = None
 
     def observe(self) -> Observation:
-        assert self.page is not None
-        ax = self.page.locator("body").aria_snapshot()
-        text = self.page.inner_text("body")
+        page = self._require_page()
+        ax = page.locator("body").aria_snapshot()
+        text = page.inner_text("body")
         return Observation(
-            url=self.page.url,
-            title=self.page.title(),
+            url=page.url,
+            title=page.title(),
             aria_snapshot=ax,
             visible_text_excerpt=text[:2000],
         )
@@ -110,14 +147,16 @@ class BrowserSurface:
         very next step raced the fetch and failed with count()==0.
         """
         self._assert_automation_may_act(f"resolve({strategy.kind})")
-        assert self.page is not None
-        scope = self.page
+        page = self._require_page()
+        scope: Page | FrameLocator = page
         for frame_selector in strategy.frame_path:
             scope = scope.frame_locator(frame_selector)
 
         if strategy.kind == "role":
             role, _, name = strategy.value.partition(":")
-            loc = scope.get_by_role(role, name=name) if name else scope.get_by_role(role)
+            # `role` comes from a recorded artifact, so it is a str at runtime;
+            # Playwright types it as a Literal of the ARIA role names.
+            loc = scope.get_by_role(role, name=name) if name else scope.get_by_role(role)  # type: ignore[arg-type]
         elif strategy.kind == "label":
             loc = scope.get_by_label(strategy.value)
         elif strategy.kind == "text":
@@ -160,37 +199,63 @@ class BrowserSurface:
         #16: REPORT.md #4 claims a desktop `Surface` would need nothing in
         `replay/` to change, which wasn't true while replay called
         `self.surface.page.inner_text(...)` itself)."""
-        assert self.page is not None
-        return self.page.inner_text(selector)
+        page = self._require_page()
+        return page.inner_text(selector)
 
     def count(self, selector: str) -> int:
-        assert self.page is not None
-        return self.page.locator(selector).count()
+        page = self._require_page()
+        return page.locator(selector).count()
 
     def is_visible(self, selector: str) -> bool:
-        assert self.page is not None
-        return self.page.locator(selector).is_visible()
+        page = self._require_page()
+        return page.locator(selector).is_visible()
 
-    def table_cells(self, row_selector: str, cell_selector: str) -> list[list[str]]:
+    def count_matching(self, locator: Locator) -> int:
+        """How many elements a Locator's first resolvable strategy matches.
+
+        Distinct from `resolve`, which treats "more than one" as a miss: for
+        a table, many matches is the expected and desired answer."""
+        page = self._require_page()
+        for strategy in locator.strategies:
+            if strategy.kind == "css":
+                scope: Page | FrameLocator = page
+                for frame_selector in strategy.frame_path:
+                    scope = scope.frame_locator(frame_selector)
+                return scope.locator(strategy.value).count()
+        return 0
+
+    def table_cells_for(self, locator: Locator, cell_selector: str) -> list[list[str]]:
+        """Rows addressed by a schema Locator rather than a raw selector, so
+        `replay/` never has to know an app's markup."""
+        page = self._require_page()
+        for strategy in locator.strategies:
+            if strategy.kind == "css":
+                scope: Page | FrameLocator = page
+                for frame_selector in strategy.frame_path:
+                    scope = scope.frame_locator(frame_selector)
+                return self.table_cells(strategy.value, cell_selector, scope)
+        return []
+
+    def table_cells(self, row_selector: str, cell_selector: str, scope=None) -> list[list[str]]:
         """All rows matching `row_selector`, each as its `cell_selector`
         cells' inner texts — the one piece of table-reading replay/
         needed from a raw Playwright Locator (row count + nth + cell
         texts), pulled behind the seam the same as `text`/`count`."""
-        assert self.page is not None
-        rows = self.page.locator(row_selector)
+        page = self._require_page()
+        rows = (scope or page).locator(row_selector)
         return [rows.nth(i).locator(cell_selector).all_inner_texts() for i in range(rows.count())]
 
     def goto(self, url: str) -> None:
         self._assert_automation_may_act("goto")
-        assert self.page is not None
-        self.page.goto(url)
+        page = self._require_page()
+        page.goto(url)
 
     def current_url(self) -> str:
-        assert self.page is not None
-        return self.page.url
+        page = self._require_page()
+        return page.url
 
     def screenshot(self, out_path: str) -> str:
-        assert self.page is not None
+        page = self._require_page()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        self.page.screenshot(path=out_path)
+        page.screenshot(path=out_path)
         return out_path

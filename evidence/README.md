@@ -30,6 +30,13 @@ hand-edited after the fact.
 | `discovery-f7b74c8c46/` | **Discovery: open-new-account.** Real LLM-driven run behind `capabilities/parabank.open-new-account/0.1.0.json`. Exercises an `enum` input (`#type` offers exactly CHECKING/SAVINGS, and the option *labels* are those words, which is what `select_option(label=...)` matches). |
 | `replay-38c15dcf53/` | **Replay: IRREVERSIBLE blocked, unattended.** ParaBank has no close-account function, so opening one is genuinely irreversible and `handling_for` returns `"block"`. Automation never performs it and never even prompts: `FAILURE`, `escalated: true`, intervention persisted for a human to pick up. |
 | `replay-c9f0db1c22/` | **Replay: IRREVERSIBLE completed by a human, automation resumes → SUCCESS.** The end-to-end §3.6 claim in one run: policy blocks the step, an intervention is raised with context, the human takes over the *same live session* and opens the account by hand, hands control back — and replay re-tests the step's checkpoint, recognises it as already done rather than blindly re-running it, continues, and returns the typed output. `recovered_steps: ["step-6-click"]`, `escalated: true`, `new_account_id: 14898`. |
+| `replay-70fc41c1ef/` | **Approval gate: a draft is refused.** `cua catalog invoke --unattended` against a capability nobody has signed off on. `failed_step_id: "approval"`, with the result telling the caller exactly how to proceed ("run it attended, then `cua approve` it"). Draft is the default, so this is what you get by doing nothing. |
+| `replay-d3b2b7c955/` | **The same invocation after `cua approve`.** Unchanged in every other respect; the only difference is a human signed off. |
+| `replay-00bb08c05c/` | **An AI agent choosing and invoking a capability.** Driven by `scripts/demo_agent_invocation.py`: the model is handed only the generated tool schemas and a plain-language request, picks `find-transactions-over-amount`, supplies typed args, and answers from the typed result. `password` is absent from every schema, so it never entered the model's context. |
+
+These three ran against `0.4.0`'s predecessor `0.3.0`, before the artifact was
+re-recorded to carry its table shape declaratively; the approval and catalog
+behaviour they show is version-independent.
 
 Both escalation demos rely on the same honest simulation, documented in
 each script: there is no interactive terminal in this environment, so the

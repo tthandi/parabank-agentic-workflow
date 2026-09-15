@@ -53,7 +53,7 @@ def test_latest_version_raises_for_unknown_capability(tmp_path):
     store = ArtifactStore(root=tmp_path)
     try:
         store.latest_version("nope.nothing")
-        assert False, "expected FileNotFoundError"
+        raise AssertionError("expected FileNotFoundError")
     except FileNotFoundError:
         pass
 
@@ -80,9 +80,17 @@ def test_all_committed_capability_artifacts_still_load():
     # business_outcome_confirm_text) — both were done with a
     # validation_alias specifically so no re-record would be required
     # (finding #27). This is the demonstration that held.
-    versions = sorted(p.name for p in (CAPABILITIES_ROOT / "parabank.find-transactions-over-amount").glob("*.json"))
-    assert versions == ["0.1.0.json", "0.2.0.json", "0.3.0.json"]
+    # Every version present, not a hardcoded list: the point is that no
+    # schema change forces a re-record, so a NEW version appearing must not
+    # make this test fail — that would invert what it is asserting.
     store = ArtifactStore(root=CAPABILITIES_ROOT)
-    for version in ("0.1.0", "0.2.0", "0.3.0"):
-        cap = store.load("parabank.find-transactions-over-amount", version)
-        assert cap.version == version
+    cap_dir = CAPABILITIES_ROOT / "parabank.find-transactions-over-amount"
+    versions = sorted(p.stem for p in cap_dir.glob("*.json"))
+    assert len(versions) >= 3, "the historical versions must stay committed"
+    for version in versions:
+        assert store.load("parabank.find-transactions-over-amount", version).version == version
+
+    # ...and across every capability in the repo, not just this one.
+    for other in sorted(p for p in CAPABILITIES_ROOT.iterdir() if p.is_dir()):
+        for artifact in sorted(other.glob("*.json")):
+            assert store.load(other.name, artifact.stem).id == other.name

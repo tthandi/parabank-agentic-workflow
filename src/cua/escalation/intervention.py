@@ -8,9 +8,9 @@ import itertools
 import json
 import re
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,7 @@ class InterventionRequest(BaseModel):
     reason: str  # why the system stopped (model said "stuck", checkpoint failed, risky action, etc.)
     screenshot_path: str | None
     url: str
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 def raise_intervention(

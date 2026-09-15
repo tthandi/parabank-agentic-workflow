@@ -207,7 +207,7 @@ def test_raises_on_a_failed_run():
     )
     try:
         ArtifactRecorder().record(failed, target_app="parabank")
-        assert False, "expected ValueError"
+        raise AssertionError("expected ValueError")
     except ValueError:
         pass
 
@@ -362,13 +362,12 @@ def test_capability_description_is_not_clobbered_by_a_profile_param_description(
     The find-transactions transcript never reaches those profiles, so the
     existing name/description test passed while the shipped transfer
     artifact carried a param's description as the capability's own."""
-    from cua.artifact.recorder import _param_name
-
     # Guard the class of bug directly: no profile loop may bind a name that
     # shadows one of record()'s own parameters.
     import inspect
 
     from cua.artifact import recorder
+    from cua.artifact.recorder import _param_name
 
     source = inspect.getsource(recorder.ArtifactRecorder.record)
     for shadowed in ("name", "description", "outputs", "version", "capability_id"):

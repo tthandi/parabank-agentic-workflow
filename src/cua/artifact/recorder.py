@@ -49,7 +49,9 @@ from cua.artifact.schema import (
     ParamSpec,
     RetryPolicy,
     RiskLevel,
+    RowFilter,
     Step,
+    TableSpec,
 )
 from cua.artifact.transcript import RunResult
 from cua.safety.redact import is_sensitive_field
@@ -676,11 +678,33 @@ class ArtifactRecorder:
                             "date": "string", "description": "string",
                             "amount": "float", "direction": "string",
                         },
+                        # The table shape travels IN the artifact rather than
+                        # living in the replay engine, which is what lets the
+                        # engine stay free of any app's selectors.
+                        table=TableSpec(
+                            row_locator=Locator(
+                                description="Transaction rows on the Account Activity page",
+                                strategies=[LocatorStrategy(kind="css", value="#transactionTable tbody tr")],
+                            ),
+                            cell_selector="td",
+                            columns={"date": 0, "description": 1, "debit": 2, "credit": 3},
+                            numeric_fields=["debit", "credit"],
+                            direction_from=["debit", "credit"],
+                            direction_field="direction",
+                            amount_field="amount",
+                            empty_indicator=Locator(
+                                description="ParaBank's own empty-account indicator",
+                                strategies=[LocatorStrategy(kind="css", value="#noTransactions")],
+                            ),
+                            row_filter=RowFilter(field="amount", op="gt", param="min_amount"),
+                        ),
                     ),
                     OutputSpec(
                         name="match_count",
                         type="int",
                         description="len(matching_transactions).",
+                        derived_from="matching_transactions",
+                        derive="count",
                     ),
                 ]
                 if extract_transactions
@@ -726,6 +750,7 @@ class ArtifactRecorder:
             inputs=list(param_specs.values()),
             outputs=outputs,
             steps=steps,
+            empty_result_code="no_matching_transactions" if extract_transactions else None,
             success_checkpoint=(
                 Checkpoint(
                     description="New account confirmation visible on the Open New Account page",

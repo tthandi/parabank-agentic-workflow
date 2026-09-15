@@ -155,7 +155,7 @@ class TestPreNavigateBlock:
 
         try:
             executor._act(step, {})
-            assert False, "expected AllowlistViolation"
+            raise AssertionError("expected AllowlistViolation")
         except AllowlistViolation:
             pass
 
@@ -174,7 +174,7 @@ class TestPostActionBlock:
         monkeypatch.setattr(executor_module, "EVIDENCE_ROOT", tmp_path)
 
         class DriftingElement:
-            def __init__(self, surface: "DriftingSurface") -> None:
+            def __init__(self, surface: DriftingSurface) -> None:
                 self._surface = surface
 
             def click(self) -> None:
@@ -230,7 +230,13 @@ def test_exhausted_escalation_still_reports_where_the_intervention_was_written(t
     from pathlib import Path
 
     from cua.artifact.schema import (
-        ActionType, Capability, Checkpoint, Locator, LocatorStrategy, RiskLevel, Step,
+        ActionType,
+        Capability,
+        Checkpoint,
+        Locator,
+        LocatorStrategy,
+        RiskLevel,
+        Step,
     )
     from cua.replay import executor as executor_module
     from cua.replay.executor import ReplayExecutor

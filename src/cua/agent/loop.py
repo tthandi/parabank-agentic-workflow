@@ -6,6 +6,7 @@ and escalates mid-run (via escalation/intervention.py) when stuck.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -18,11 +19,12 @@ from cua.artifact.schema import Locator, LocatorStrategy
 from cua.artifact.transcript import RunResult
 from cua.escalation.handoff import HandoffController
 from cua.escalation.intervention import InterventionRequest, raise_intervention
-from cua.escalation.operator_mock import prompt_operator
+from cua.escalation.operator_mock import operator_available, prompt_operator
 from cua.obslog.logger import RunLogger
 from cua.safety.allowlist import Allowlist, AllowlistViolation
 from cua.safety.redact import is_sensitive_field, redact
 from cua.surface.browser import BrowserSurface
+from cua.surface.control import SurfaceNotStartedError
 
 EVIDENCE_ROOT = Path(__file__).resolve().parents[3] / "evidence"
 
@@ -45,6 +47,11 @@ class StoppingConditions:
     # until max_steps caught it, at full API cost per turn. Self-reporting
     # is not a stopping condition; this is.
     max_repeated_actions: int = 3
+    # Transient provider failures (429, overload) retried before the run is
+    # abandoned. Deliberately small — a provider that is down stays down
+    # longer than any budget worth spending inside one run.
+    decide_attempts: int = 3
+    decide_backoff_s: float = 2.0
 
 
 _ROLE_BY_TAG = {"a": "link", "button": "button", "select": "combobox"}
@@ -104,6 +111,21 @@ _HARVEST_JS = """el => {
 }"""
 
 
+_IDENT_RE = re.compile(r"[A-Za-z_][-\w]*")
+
+
+def _css_string(value: str) -> str:
+    """Quote a DOM attribute value for use inside a CSS attribute selector.
+
+    These values come from the live page, so they can contain anything — a
+    quote, a backslash, a newline. Interpolating them raw produced a
+    malformed selector that silently matches nothing, so a harvested
+    "fallback" strategy could never resolve and `resolved_via` would report
+    drift that was really a broken selector. json.dumps gives exactly the
+    escaping CSS strings want."""
+    return json.dumps(value)
+
+
 def _harvest_strategies(element) -> list[LocatorStrategy]:
     """Given a resolved Playwright Locator (exactly one match), derive ranked
     LocatorStrategy candidates FROM the element's actual properties — not
@@ -143,12 +165,25 @@ def _harvest_strategies(element) -> list[LocatorStrategy]:
         strategies.append(LocatorStrategy(kind="text", value=props["text"]))
     if props.get("placeholder"):
         strategies.append(
-            LocatorStrategy(kind="css", value=f"{props['tag']}[placeholder=\"{props['placeholder']}\"]")
+            LocatorStrategy(
+                kind="css",
+                value=f"{props['tag']}[placeholder={_css_string(props['placeholder'])}]",
+            )
         )
     if props.get("name"):
-        strategies.append(LocatorStrategy(kind="css", value=f"{props['tag']}[name=\"{props['name']}\"]"))
+        strategies.append(
+            LocatorStrategy(kind="css", value=f"{props['tag']}[name={_css_string(props['name'])}]")
+        )
     if props.get("id"):
-        strategies.append(LocatorStrategy(kind="css", value=f"#{props['id']}"))
+        # An id with CSS-special characters (a dot, a colon) is not a valid
+        # bare #id selector; [id="..."] is, and quoting is already handled.
+        strategies.append(
+            LocatorStrategy(
+                kind="css",
+                value=f"#{props['id']}" if _IDENT_RE.fullmatch(props["id"])
+                else f"{props['tag']}[id={_css_string(props['id'])}]",
+            )
+        )
     if props.get("nthOfType"):
         strategies.append(
             LocatorStrategy(kind="css", value=f"{parent_prefix}{props['tag']}:nth-of-type({props['nthOfType']})")
@@ -211,20 +246,20 @@ def _xpath_literal(value: str) -> str:
     return f"concat({parts})"
 
 
-def _cascade(page, description: str, action_kind: str):
+def _cascade(scope, description: str, action_kind: str):
     for role in ("button", "link", "textbox", "combobox", "checkbox"):
         try:
-            loc = page.get_by_role(role, name=description)
+            loc = scope.get_by_role(role, name=description)
             if loc.count() == 1 and _acceptable(loc, action_kind):
                 return loc, _harvest_strategies(loc)
         except Exception:
             pass
 
     for finder in (
-        lambda d: page.get_by_label(d),
-        lambda d: page.get_by_placeholder(d),
-        lambda d: page.get_by_text(d, exact=True),
-        lambda d: page.get_by_text(d, exact=False),
+        lambda d: scope.get_by_label(d),
+        lambda d: scope.get_by_placeholder(d),
+        lambda d: scope.get_by_text(d, exact=True),
+        lambda d: scope.get_by_text(d, exact=False),
     ):
         try:
             loc = finder(description)
@@ -261,9 +296,9 @@ def _cascade(page, description: str, action_kind: str):
     ):
         try:
             loc = (
-                page.locator(f"xpath={xpath}")
+                scope.locator(f"xpath={xpath}")
                 if xpath.startswith("(//text()")
-                else page.get_by_text(description, exact=False).locator(xpath)
+                else scope.get_by_text(description, exact=False).locator(xpath)
             )
             if loc.count() == 1 and _acceptable(loc, action_kind):
                 return loc, _harvest_strategies(loc)
@@ -271,6 +306,26 @@ def _cascade(page, description: str, action_kind: str):
             continue
 
     return None, []
+
+
+def _frame_selectors(page) -> list[list[str]]:
+    """Frame chains to search, top-level document first.
+
+    Each chain is the list of frame selectors `surface/browser.py`'s
+    `resolve_strategy` walks with `frame_locator()`. A frame is addressed by
+    name where it has one and by index otherwise, which is what a frameset
+    app actually offers — legacy framesets name their frames, that being the
+    whole point of a frameset.
+    """
+    chains: list[list[str]] = [[]]
+    try:
+        for index, frame in enumerate(page.frames):
+            if frame == page.main_frame:
+                continue
+            chains.append([f'iframe[name="{frame.name}"]' if frame.name else f"iframe >> nth={index - 1}"])
+    except Exception:
+        pass
+    return chains
 
 
 def resolve_natural_target(page, description: str, action_kind: str = "click"):
@@ -290,13 +345,29 @@ def resolve_natural_target(page, description: str, action_kind: str = "click"):
     strip a trailing generic noun ("field"/"box"/"textbox"/...) and retry
     once before giving up.
     """
-    element, strategies = _cascade(page, description, action_kind)
-    if element is not None:
-        return element, strategies
+    # Frames are searched too, and the chain that found the element is
+    # stamped onto every harvested strategy. `frame_path` was replayable
+    # from the start but never RECORDED — so a frameset app, the brief's own
+    # example of the legacy surface this system exists for, could be
+    # replayed against but never discovered against. Half a seam.
+    for chain in _frame_selectors(page):
+        scope = page
+        try:
+            for selector in chain:
+                scope = scope.frame_locator(selector)
+        except Exception:
+            continue
 
-    stripped = _SUFFIX_WORDS.sub("", description).strip()
-    if stripped and stripped != description:
-        return _cascade(page, stripped, action_kind)
+        for candidate in (description, _SUFFIX_WORDS.sub("", description).strip()):
+            if not candidate or (candidate != description and candidate == description):
+                continue
+            element, strategies = _cascade(scope, candidate, action_kind)
+            if element is not None:
+                for strategy in strategies:
+                    strategy.frame_path = list(chain)
+                return element, strategies
+            if candidate == description and _SUFFIX_WORDS.sub("", description).strip() == description:
+                break
 
     return None, []
 
@@ -392,8 +463,19 @@ class AgentLoop:
                         logger.log("stopping_condition", condition="timeout")
                         break
 
-                    observation = self.surface.observe()
-                    action = self.decider.decide(goal, observation, history_lines, credentials)
+                    # B16: `decide()` reaches the network, so it fails the way
+                    # networks fail — a 429, an overload, a dropped
+                    # connection. It sat outside every guard, so a rate limit
+                    # killed an otherwise healthy run with a traceback and no
+                    # RunResult. Retried with backoff, then treated as one
+                    # bad turn rather than the end of the run.
+                    try:
+                        observation = self.surface.observe()
+                        action = self._decide_with_retry(goal, observation, history_lines, credentials, logger)
+                    except Exception as exc:
+                        logger.log("decide_failed", step=step_num, error_type=type(exc).__name__, error=str(exc))
+                        stuck_reason = f"could not decide a next action: {type(exc).__name__}: {exc}"
+                        break
                     logged_value = (
                         "[REDACTED]"
                         if is_sensitive_field(action.target_description)
@@ -448,18 +530,14 @@ class AgentLoop:
                         break
 
                     if action.kind == "stuck":
-                        screenshot = str(evidence_dir / f"stuck-step{step_num}.png")
+                        shot_path = str(evidence_dir / f"stuck-step{step_num}.png")
+                        screenshot: str | None = shot_path
                         try:
-                            self.surface.screenshot(screenshot)
+                            self.surface.screenshot(shot_path)
                         except Exception:
                             screenshot = None
                         logger.log("stuck", step=step_num, reason=action.reason, screenshot=screenshot)
 
-                        if not self.escalate_on_stuck or escalation_count >= self.stopping.max_escalations:
-                            stuck_reason = action.reason
-                            break
-
-                        escalation_count += 1
                         request = InterventionRequest(
                             run_id=run_id,
                             capability_id=None,
@@ -469,6 +547,22 @@ class AgentLoop:
                             screenshot_path=screenshot,
                             url=self.surface.current_url(),
                         )
+
+                        # No human available is not the same as no handoff
+                        # wanted: persist the request either way, so someone
+                        # can pick it up later. The point of routing is that
+                        # the context survives, not that a person is there
+                        # right now.
+                        can_hand_off = self.escalate_on_stuck and operator_available()
+                        if not can_hand_off or escalation_count >= self.stopping.max_escalations:
+                            if self.escalate_on_stuck:
+                                raise_intervention(request, evidence_dir, scrub=logger.scrub)
+                                if not operator_available():
+                                    logger.log("escalation_skipped_unattended", step=step_num)
+                            stuck_reason = action.reason
+                            break
+
+                        escalation_count += 1
                         raise_intervention(request, evidence_dir, scrub=logger.scrub)
                         handoff = HandoffController(self.surface)
                         prompt_operator(request, handoff, logger=logger)
@@ -552,8 +646,48 @@ class AgentLoop:
             evidence_dir=str(evidence_dir),
         )
 
+    def _decide_with_retry(self, goal, observation, history_lines, credentials, logger: RunLogger):
+        """Ask the model, retrying transient provider failures.
+
+        Bounded and short: a discovery run already has a wall-clock timeout,
+        and a provider that is down stays down longer than any retry budget
+        worth spending here. The last failure propagates to the caller,
+        which ends the run cleanly with a stuck_reason.
+        """
+        delay = self.stopping.decide_backoff_s
+        for attempt in range(self.stopping.decide_attempts):
+            try:
+                return self.decider.decide(goal, observation, history_lines, credentials)
+            except Exception as exc:
+                if attempt == self.stopping.decide_attempts - 1:
+                    raise
+                logger.log(
+                    "decide_retrying", attempt=attempt + 1,
+                    error_type=type(exc).__name__, backoff_s=delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+        raise RuntimeError("unreachable")
+
     def _act(self, action: AgentAction, step_num: int, observation, logger: RunLogger) -> dict:
         entry: dict = {"index": step_num, "action": action.__dict__}
+        page = self.surface.page
+        if page is None:
+            raise SurfaceNotStartedError(f"act({action.kind})")
+
+        # Every action below navigates by a target the model named. The
+        # model is *asked* for one, and mostly supplies one — but "mostly"
+        # is not a guarantee, and a None reaching get_by_text() or
+        # resolve_natural_target() fails somewhere far less legible than
+        # here. Same class as the fill(None) hole on the replay side: the
+        # schema constrains what is declared, not what arrives at runtime.
+        if action.kind in ("click", "fill", "select", "wait_for") and not action.target_description:
+            logger.log("target_unresolved", step=step_num, target=f"({action.kind}: no target named)")
+            entry["locator"] = None
+            entry["resolution_failed"] = True
+            return entry
+        # Narrowed by the guard above for every action that needs it.
+        target = action.target_description or ""
 
         if action.kind == "navigate":
             if not action.value:
@@ -572,12 +706,12 @@ class AgentLoop:
             # propagates to run(), which stops the loop as a policy
             # violation rather than treating it like a resolution failure.
             self.allowlist.enforce_url(action.value, phase="pre-navigate")
-            self.surface.page.goto(action.value)
+            page.goto(action.value)
             entry["locator"] = None
             return entry
 
         if action.kind == "wait_for":
-            self.surface.page.get_by_text(action.target_description, exact=False).first.wait_for(
+            page.get_by_text(target, exact=False).first.wait_for(
                 timeout=5000
             )
             entry["locator"] = None
@@ -596,7 +730,7 @@ class AgentLoop:
             return entry
 
         element, strategies = resolve_natural_target(
-            self.surface.page, action.target_description, action_kind=action.kind
+            page, target, action_kind=action.kind
         )
         if element is None:
             logger.log("target_unresolved", step=step_num, target=action.target_description)
@@ -604,7 +738,7 @@ class AgentLoop:
             entry["resolution_failed"] = True
             return entry
 
-        locator = Locator(description=action.target_description, strategies=strategies)
+        locator = Locator(description=target, strategies=strategies)
         entry["locator"] = locator.model_dump()
 
         if action.kind == "click":

@@ -18,7 +18,7 @@ import pytest
 from cua.artifact.schema import Locator, LocatorStrategy
 from cua.escalation.handoff import Controller, HandoffController
 from cua.surface.browser import BrowserSurface
-from cua.surface.control import ControlHeldByHumanError
+from cua.surface.control import ControlHeldByHumanError, SurfaceNotStartedError
 from cua.surface.types import Observation
 
 _LOCATOR = Locator(description="Go", strategies=[LocatorStrategy(kind="css", value="#go")])
@@ -54,7 +54,7 @@ def test_acting_is_permitted_again_after_control_returns():
 
     # Past the gate now, so it fails on the missing page instead — proof
     # the gate is what refused above, and that it stops refusing.
-    with pytest.raises(AssertionError):
+    with pytest.raises(SurfaceNotStartedError):
         surface.goto("http://localhost:8080/parabank/index.htm")
 
 

@@ -69,6 +69,12 @@ def main() -> None:
 )
 @click.option("--max-steps", default=25, show_default=True)
 @click.option(
+    "--unattended", is_flag=True, default=False,
+    help="Never block on a human handoff. A stuck run persists its intervention "
+    "to evidence/ for later review and ends, instead of waiting on input(). "
+    "Discovery auto-downgrades to this whenever stdin isn't a real TTY anyway.",
+)
+@click.option(
     "--capability-version", default="0.1.0", show_default=True,
     help="Version to record the resulting capability as. Bump this deliberately on a "
     "re-record that changes the flow — it is never auto-incremented (see "
@@ -81,7 +87,7 @@ def main() -> None:
 )
 def run(
     goal: str, target: str, username: str | None, password: str | None, max_steps: int,
-    capability_version: str, force_overwrite: bool,
+    unattended: bool, capability_version: str, force_overwrite: bool,
 ) -> None:
     """Run the LLM-driven discovery agent against a live target and save the resulting capability.
 
@@ -105,6 +111,7 @@ def run(
         decider=LLMDecider(),
         allowlist=allowlist,
         stopping=StoppingConditions(max_steps=max_steps),
+        escalate_on_stuck=not unattended,
     )
 
     click.echo(f"Discovery run starting: goal={goal!r} target={target} entry_url={entry_url}")
@@ -143,13 +150,26 @@ def run(
     "evidence/ for later review, instead of waiting on input().",
 )
 @click.option(
+    "--max-escalations", default=1, show_default=True,
+    help="How many times one replay may hand off to a human before giving up. "
+    "Counted per run, not per step.",
+)
+@click.option(
+    "--deadline", default=900.0, show_default=True,
+    help="Whole-run ceiling in seconds. Per-checkpoint timeouts bound each wait; "
+    "this bounds their sum. 0 disables it.",
+)
+@click.option(
     "--base-url", default=None,
     help="Tenant base URL for a capability recorded with a RELATIVE entry_url — this is "
     "how one artifact is replayed against a second institution running the same app, "
     "instead of editing the JSON. Ignored when entry_url is absolute. "
     "Defaults to $PARABANK_BASE_URL.",
 )
-def replay(capability: str, version: str, params: str, unattended: bool, base_url: str | None) -> None:
+def replay(
+    capability: str, version: str, params: str, unattended: bool,
+    max_escalations: int, deadline: float, base_url: str | None,
+) -> None:
     """Deterministically replay a saved capability artifact — no LLM in the loop."""
     from cua.catalog.stats import record_replay
     from cua.replay.executor import ReplayExecutor
@@ -197,6 +217,8 @@ def replay(capability: str, version: str, params: str, unattended: bool, base_ur
         # so a human must have signed off first. Attended replay stays
         # open to drafts, which is how a capability earns approval.
         require_approval=unattended,
+        max_escalations=max_escalations,
+        deadline_s=deadline or None,
     )
 
     result = executor.run(cap, parsed, base_url=base_url or os.environ.get("PARABANK_BASE_URL"))

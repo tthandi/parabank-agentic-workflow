@@ -69,3 +69,38 @@ def test_surface_module_does_not_import_from_replay():
     # (replay depends on surface, never the reverse).
     source = (REPO_ROOT / "src" / "cua" / "surface" / "browser.py").read_text()
     assert "cua.replay" not in source
+
+
+def test_replay_contains_no_app_specific_selectors_or_capability_ids():
+    """REPORT.md §4 claims a desktop Surface would need nothing under
+    `replay/` to change. That was false while the executor carried
+    `#transactionTable`, `#noTransactions` and a capability id it compared
+    against — extraction for the one real capability lived in the engine.
+    The grep is the acceptance criterion, same as the `.page` check above.
+
+    Extraction is declarative now (schema.TableSpec), so a capability's
+    table shape travels in the artifact and this module knows no app.
+    """
+    offenders = []
+    for path in (REPO_ROOT / "src" / "cua" / "replay").rglob("*.py"):
+        in_docstring = False
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            stripped = line.strip()
+            # Prose is allowed to name what this module used to contain —
+            # the comments explaining the removal are the record of it. Only
+            # executable lines are scanned, so docstring bodies (not just
+            # their delimiters) have to be tracked.
+            fences = line.count('"""')
+            if in_docstring:
+                if fences:
+                    in_docstring = False
+                continue
+            if fences == 1:
+                in_docstring = True
+                continue
+            if fences >= 2 or stripped.startswith("#"):
+                continue
+            for needle in ("transactionTable", "noTransactions", "parabank", "accountTable"):
+                if needle in line:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {stripped}")
+    assert not offenders, "app-specific knowledge under replay/:\n" + "\n".join(offenders)

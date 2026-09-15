@@ -22,6 +22,7 @@ src/cua/
   safety/       allowlist enforcement, risk policy, redaction
   escalation/   intervention requests, human handoff/control-transfer, mock operator surface
   surface/      Playwright-backed "surface" (perception + actions) + surface-agnostic types
+  catalog/      saved artifacts as a catalog of agent-callable tools + replay stats
   obslog/       structured JSONL run logging
   cli.py        `cua run` / `cua replay` entrypoints
 capabilities/    saved capability artifacts (versioned JSON)
@@ -117,10 +118,14 @@ CUA_PASSWORD='WrongPassword!' cua replay --capability parabank.find-transactions
 #     explicit y/n. Account ids are typed INPUTS, not baked literals, and
 #     entry_url is tenant-relative — pass --base-url to point the same
 #     artifact at a different institution.
-CUA_PASSWORD='Fixture!23' cua replay --capability parabank.transfer-funds \
-  --version 0.1.0 --base-url http://localhost:8080/parabank \
-  --params '{"username":"alice_h","amount":25,"from_account":"13566","to_account":"13677"}'
-#     (from_account/to_account come from fixtures/seeded.json after seeding)
+#     Account ids are whatever your local instance assigned — read them from
+#     fixtures/seeded.json (written by the seed step), not from this example:
+#     jq '.personas[] | select(.username=="alice_h")' fixtures/seeded.json
+#
+#     Run directly, this is REFUSED, and that is the demonstration: the
+#     capability is `draft`, and step-8-click is RISKY so it needs an
+#     operator's y/n that a non-interactive shell cannot give. Use the demo
+#     script below to see all three branches of that gate.
 
 # The risk gate needs an operator to answer. There's no interactive
 # terminal in this environment, so this script simulates the answer while

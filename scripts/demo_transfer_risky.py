@@ -62,8 +62,15 @@ def main() -> int:
     ap.add_argument("--amount", type=float, default=25.0)
     args = ap.parse_args()
 
-    seeded = json.loads((ROOT / "fixtures" / "seeded.json").read_text())
-    alice = next(p for p in seeded["personas"] if p["username"] == "alice_h")
+    # seeded.json records which account ids this machine's ParaBank happened
+    # to assign, so it is gitignored — a fresh clone has to seed first. Say
+    # that, rather than dying on a missing file.
+    manifest = ROOT / "fixtures" / "seeded.json"
+    if not manifest.exists():
+        print("No fixtures/seeded.json — seed the local instance first:")
+        print("    python scripts/seed_parabank.py --reset")
+        return 1
+    alice = next(p for p in json.loads(manifest.read_text())["personas"] if p["username"] == "alice_h")
     params = {
         "username": "alice_h",
         "password": os.environ.get("CUA_PASSWORD", "Fixture!23"),

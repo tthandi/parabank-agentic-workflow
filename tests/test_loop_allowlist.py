@@ -186,6 +186,13 @@ def test_post_handoff_navigation_outside_allowlist_stops_the_run(monkeypatch):
     # A human handoff hands a live session to a person who can navigate it
     # anywhere — only the diff summary was being trusted before, with no
     # re-check that where they landed is still in policy.
+    #
+    # `operator_available()` is False under pytest (no TTY), which is the
+    # point of that guard — it stops a non-interactive run reaching input().
+    # Patch it to exercise the attended handoff contract in isolation from
+    # that environment detail, the same way test_replay_risk_policy sets
+    # `attended` directly.
+    monkeypatch.setattr("cua.agent.loop.operator_available", lambda: True)
     surface = FakeSurface()
 
     def fake_input(prompt=""):

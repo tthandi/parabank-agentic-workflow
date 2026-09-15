@@ -11,7 +11,7 @@ Third-pass review of `parabank-computer-use`, covering five things the previous 
 
 Every fix below is written as an applicable diff.
 
-> **Status: all packets are applied.** (B1, B2, B3, B5, B6, B7, B8, B9, B10, B11, B13, and
+> **Status: all packets applied; all 35 findings closed.** (B1, B2, B3, B5, B6, B7, B8, B9, B10, B11, B13, and
 > the `entry_url` multi-tenant gap). All four prerequisites for the transfer-funds capability
 > (Part 3) are in place, and the transfer-funds capability itself is recorded, replaying, and
 > live-evidenced. Building it surfaced five further bugs (B26–B30, added to Part 1) that only a
@@ -1376,3 +1376,49 @@ areas the brief weights most heavily (correctness of the core loop, robustness a
 handling, safety). Packets 4–6 add breadth, which the brief explicitly does not reward on its
 own — they earn their place only because each one exercises a mechanism that currently exists but
 has never run.
+
+
+---
+
+# Part 7 — Closing the thirteen open findings
+
+All thirteen are now closed, plus one more (B36) that fixing them exposed. `pytest` **210 passed**;
+`ruff check` and `mypy` both clean.
+
+| # | What it was | What closed it |
+|---|---|---|
+| **B4** | Discovery escalation died with `EOFError` in any non-interactive context — the one Tier 1 item left, and the path *more* likely to run unattended in production. | `operator_available()` in one place, consulted by both loops. A stuck unattended run now **persists its intervention and ends cleanly** rather than dying: the point of routing is that context survives, not that a person is there. Plus `cua run --unattended`. |
+| **B12** | `frame_path` was replayable but never *recorded*, so a frameset app could be replayed against and never discovered against. | `resolve_natural_target` searches frames and stamps the chain onto every harvested strategy. |
+| **B14** | No dialog handling and no session-expiry detection, though `outcomes.py` described interstitial recovery. | A page-level dialog handler that dismisses by default (`Capability.on_dialog` to accept), recorded and reported as a recovered step; `Capability.session_guard` turns mid-flow expiry into a `session_expired` **business outcome** rather than a misleading checkpoint failure on the next step. |
+| **B15** | Escalation-retry left a `step_started` with no terminal event, so JSONL step pairs stopped balancing exactly on the runs a reader is most likely reading. | `step_retrying` on all seven retry arms. |
+| **B16** | An LLM rate limit killed a discovery run with a traceback — `decide()` sat outside every guard. | Bounded retry with backoff, then one clean stuck reason. |
+| **B17** | `backoff_ms` was a constant sleep. A field named backoff should be one. | Exponential: a transient table that missed a 500ms window is no likelier to make the next identical one. |
+| **B18** | `max_escalations` hardcoded from the CLI. | `--max-escalations`. |
+| **B19** | Per-checkpoint timeouts were each bounded; nothing bounded their sum. | `deadline_s` (default 900s), `--deadline`. |
+| **B20** | Nine `assert self.page is not None` — stripped under `python -O`, turning a clear invariant into an `AttributeError` from deeper. | `SurfaceNotStartedError`, via one `_require_page()` whose **return value** is used, which also let mypy verify the narrowing. |
+| **B21** | Attribute values interpolated into CSS unescaped: a quote produced a malformed selector that silently matched nothing, so a "fallback" could never resolve and `resolved_via` reported drift that was really a broken selector. | `_css_string()`; ids that aren't valid bare selectors fall back to `[id="…"]`. |
+| **B22** | Model id hardcoded. | `CUA_MODEL`. |
+| **B23** | REPORT §4 claimed a desktop Surface needed no change under `replay/` while five ParaBank selectors lived there. | **Extraction is now declarative.** `schema.TableSpec` carries the row locator, column map, numeric fields, debit/credit pair, empty-state indicator and row filter; `derived_from`/`derive` express `match_count`. The executor holds no selector and no capability id, and a grep test in `test_module_boundaries.py` keeps it that way. The claim is now true. |
+| **B25** | No linter, type-checker or CI. | `ruff` + `mypy` configured with reasons for what is *not* enabled, and a GitHub Actions workflow running lint, types, tests, and a check that every committed artifact still validates — the failure most likely to slip past review, because artifacts are data rather than code. |
+
+### B36 — a data-loss bug the migration exposed
+
+Porting the hand-written table reader to `TableSpec` surfaced a real defect in the original. ParaBank
+renders `-` as its "nothing in this column" placeholder, and `-` is truthy in Python — so a row like
+`["09-01-2026", "Deposit", "-", "$50.00"]` took the **debit** branch, failed to parse `-`, and was
+dropped. That row is a $50 credit; the description says Deposit. A capability whose entire purpose is
+reporting transactions was silently losing real ones, **and the test covering it asserted the loss was
+intended**. Choosing the column by parsed value rather than raw truthiness keeps both rows and labels
+each correctly.
+
+### What this cost elsewhere
+
+Four existing tests were updated rather than deleted, each because the fix changed a contract they
+encoded: the handoff test now patches `operator_available` (B4 makes it False under pytest, which is
+the point); the control-gate test expects `SurfaceNotStartedError` instead of `AssertionError` (B20);
+the artifact-load test iterates whatever versions exist instead of a hardcoded list, since a *new*
+version appearing must not fail a test asserting no re-record is ever forced; and the extraction tests
+drive a `TableSpec`, which is also what proves the engine reads a table it was never written for.
+
+`find-transactions-over-amount` **0.4.0** carries the declarative spec; 0.1.0–0.3.0 stay committed and
+still validate.

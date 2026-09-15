@@ -27,7 +27,7 @@ from cua.artifact.schema import (
 from cua.replay import executor as executor_module
 from cua.replay.executor import ReplayExecutor
 from cua.replay.outcomes import OutcomeKind
-from cua.safety.allowlist import Allowlist, AllowlistViolation
+from cua.safety.allowlist import Allowlist
 from cua.surface.types import Observation
 
 

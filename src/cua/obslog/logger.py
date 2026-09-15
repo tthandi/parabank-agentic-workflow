@@ -16,7 +16,7 @@ walked into it.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cua.safety.redact import redact
@@ -84,7 +84,7 @@ class RunLogger:
 
     def log(self, event_type: str, **fields) -> None:
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "run_id": self.run_id,
             "event_type": event_type,
             **{k: self._scrub(v, key=k) for k, v in fields.items()},

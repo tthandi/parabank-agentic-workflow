@@ -75,7 +75,7 @@ def main() -> int:
     capabilities = list_capabilities()
     tools = [to_tool_schema(cap) for cap in capabilities]
     print(f"[catalog] offering {len(tools)} capabilities to the model:")
-    for cap, tool in zip(capabilities, tools):
+    for cap, tool in zip(capabilities, tools, strict=True):
         secret = [s.name for s in cap.inputs if s.secret]
         print(f"    {tool['name']:38} [{cap.approval}]  args={list(tool['input_schema']['properties'])}"
               + (f"  (withheld: {secret})" if secret else ""))

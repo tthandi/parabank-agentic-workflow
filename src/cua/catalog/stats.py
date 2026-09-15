@@ -10,7 +10,7 @@ a unit test driving a fake surface does not.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from cua.artifact.schema import Capability, ReplayStats
 from cua.artifact.store import ArtifactStore
@@ -58,7 +58,7 @@ def record_replay(capability: Capability, result: ReplayResult, store: ArtifactS
         runs=runs,
         successes=previous.successes + (1 if worked else 0),
         fallback_rate=round(rate, 4),
-        last_run_at=datetime.now(timezone.utc).isoformat(),
+        last_run_at=datetime.now(UTC).isoformat(),
     )})
     store.save(updated, force=True)  # same version, deliberately overwritten
     return updated
