@@ -149,8 +149,19 @@ def seed_persona(pb: ParaBank, p: dict, defaults: dict) -> dict:
         # which is why the deposit above has to come first.
         savings = pb.create_account(cid, kind=1, from_account_id=checking)["id"]
 
+    if p.get("extra_savings"):
+        # A third account, so "the first row of #accountTable" is a genuine
+        # choice rather than the only option (see fixtures/personas.yaml).
+        pb.create_account(cid, kind=1, from_account_id=checking)
+
     for amount, kind in p.get("transactions", []):
         (pb.deposit if kind == "deposit" else pb.withdraw)(checking, amount)
+
+    bulk = p.get("bulk_transactions")
+    if bulk:
+        action = pb.deposit if bulk["kind"] == "deposit" else pb.withdraw
+        for _ in range(bulk["count"]):
+            action(checking, bulk["amount"])
 
     if p.get("drain_savings_below_minimum") and savings is not None:
         balance = next(a for a in pb.accounts(cid) if a["id"] == savings)["balance"]

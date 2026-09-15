@@ -1,0 +1,20 @@
+{"ts": "2026-09-14T10:01:46.390712+00:00", "run_id": "replay-d82ef14bf9", "event_type": "replay_started", "capability_id": "parabank.request-loan", "version": "0.1.0", "params_keys": ["down_payment", "from_account", "loan_amount", "password", "username"]}
+{"ts": "2026-09-14T10:01:47.348824+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-1-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:47.395038+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-1-fill", "resolved_via": "css", "duration_ms": 46}
+{"ts": "2026-09-14T10:01:47.395167+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-2-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:47.419575+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-2-fill", "resolved_via": "css", "duration_ms": 24}
+{"ts": "2026-09-14T10:01:47.419791+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-3-click", "action": "click"}
+{"ts": "2026-09-14T10:01:47.518386+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-3-click", "resolved_via": "role", "duration_ms": 99}
+{"ts": "2026-09-14T10:01:47.518584+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-4-click", "action": "click"}
+{"ts": "2026-09-14T10:01:47.576776+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-4-click", "resolved_via": "role", "duration_ms": 58}
+{"ts": "2026-09-14T10:01:47.576941+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-5-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:47.595276+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-5-fill", "resolved_via": "css", "duration_ms": 18}
+{"ts": "2026-09-14T10:01:47.595421+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-6-fill", "action": "fill"}
+{"ts": "2026-09-14T10:01:47.603058+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-6-fill", "resolved_via": "css", "duration_ms": 8}
+{"ts": "2026-09-14T10:01:47.603253+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-7-select", "action": "select"}
+{"ts": "2026-09-14T10:01:47.615930+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-7-select", "resolved_via": "css", "duration_ms": 13}
+{"ts": "2026-09-14T10:01:47.616124+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_started", "step": "step-8-click", "action": "click"}
+{"ts": "2026-09-14T10:01:47.616197+00:00", "run_id": "replay-d82ef14bf9", "event_type": "policy_confirmed", "step": "step-8-click"}
+{"ts": "2026-09-14T10:01:47.894628+00:00", "run_id": "replay-d82ef14bf9", "event_type": "step_finished", "step": "step-8-click", "resolved_via": "role", "duration_ms": 279}
+{"ts": "2026-09-14T10:01:47.901101+00:00", "run_id": "replay-d82ef14bf9", "event_type": "outputs", "new_account_id": 14343}
+{"ts": "2026-09-14T10:01:47.901191+00:00", "run_id": "replay-d82ef14bf9", "event_type": "replay_succeeded"}

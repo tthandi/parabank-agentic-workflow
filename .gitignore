@@ -23,3 +23,8 @@ fixtures/seeded.json
 
 # The employer's assignment brief — reference material, not project source.
 Assignment*.pdf
+
+# Editor/tool droppings.
+.Rhistory
+.idea/
+.vscode/

@@ -5,10 +5,17 @@
 
 target_app: parabank
 
+# An entry may be a bare host (permits any port) or "host:port" (pins it).
+# The local entries are pinned deliberately: a bare "localhost" permits
+# every service on the machine, which is the wrong granularity for an
+# allowlist whose job is to say which app instance the agent may drive.
+# If you run ParaBank on another port, change it here as well as in
+# PARABANK_BASE_URL — the allowlist is meant to be the thing you have to
+# edit on purpose.
 allowed_domains:
-  - parabank.parasoft.com   # keep: the public instance stays a valid target
-  - localhost
-  - 127.0.0.1
+  - parabank.parasoft.com   # keep: the public instance stays a valid target (https/443)
+  - localhost:8080
+  - 127.0.0.1:8080
 
 # Prefix match against the URL path. "*" suffix is stripped before matching.
 allowed_routes:

@@ -1,7 +1,11 @@
+from pathlib import Path
+
 import pytest
 
 from cua.artifact.schema import Capability, Checkpoint
 from cua.artifact.store import ArtifactStore, VersionExistsError
+
+CAPABILITIES_ROOT = Path(__file__).resolve().parents[1] / "capabilities"
 
 
 def _cap(version: str) -> Capability:
@@ -33,11 +37,23 @@ def test_latest_version_picks_highest_semver(tmp_path):
     assert store.latest_version("parabank.demo") == "0.10.0"
 
 
+def test_latest_version_ignores_a_non_semver_json_file(tmp_path):
+    # A stray non-semver *.json file in the capability directory (a note,
+    # a backup copy) used to crash this with an uncaught ValueError from
+    # int() when computing the sort key — it should be ignored instead.
+    store = ArtifactStore(root=tmp_path)
+    store.save(_cap("0.1.0"))
+    store.save(_cap("0.2.0"))
+    (tmp_path / "parabank.demo" / "notes.json").write_text("{}")
+
+    assert store.latest_version("parabank.demo") == "0.2.0"
+
+
 def test_latest_version_raises_for_unknown_capability(tmp_path):
     store = ArtifactStore(root=tmp_path)
     try:
         store.latest_version("nope.nothing")
-        assert False, "expected FileNotFoundError"
+        raise AssertionError("expected FileNotFoundError")
     except FileNotFoundError:
         pass
 
@@ -56,3 +72,25 @@ def test_save_force_true_does_overwrite(tmp_path):
     # deliberate, explicit escape hatch.
     path = store.save(_cap("0.1.0"), force=True)
     assert path.exists()
+
+
+def test_all_committed_capability_artifacts_still_load():
+    # These predate two renames (RetryPolicy.max_attempts ->
+    # max_retries, Step.business_outcome_signal ->
+    # business_outcome_confirm_text) — both were done with a
+    # validation_alias specifically so no re-record would be required
+    # (finding #27). This is the demonstration that held.
+    # Every version present, not a hardcoded list: the point is that no
+    # schema change forces a re-record, so a NEW version appearing must not
+    # make this test fail — that would invert what it is asserting.
+    store = ArtifactStore(root=CAPABILITIES_ROOT)
+    cap_dir = CAPABILITIES_ROOT / "parabank.find-transactions-over-amount"
+    versions = sorted(p.stem for p in cap_dir.glob("*.json"))
+    assert len(versions) >= 3, "the historical versions must stay committed"
+    for version in versions:
+        assert store.load("parabank.find-transactions-over-amount", version).version == version
+
+    # ...and across every capability in the repo, not just this one.
+    for other in sorted(p for p in CAPABILITIES_ROOT.iterdir() if p.is_dir()):
+        for artifact in sorted(other.glob("*.json")):
+            assert store.load(other.name, artifact.stem).id == other.name

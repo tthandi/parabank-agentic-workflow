@@ -11,14 +11,10 @@ method) without a live browser.
 
 from __future__ import annotations
 
-from cua.artifact.schema import Locator, LocatorStrategy
+from cua.artifact.schema import Locator
+from cua.surface.errors import LocatorResolutionError
 
-
-class LocatorResolutionError(Exception):
-    def __init__(self, locator: Locator, tried: list[LocatorStrategy]) -> None:
-        self.locator = locator
-        self.tried = tried
-        super().__init__(f"No strategy resolved for: {locator.description}")
+__all__ = ["LocatorResolutionError", "resolve_with_fallback"]
 
 
 def resolve_with_fallback(surface, locator: Locator):

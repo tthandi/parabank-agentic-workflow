@@ -116,7 +116,7 @@ normally. `ReplayExecutor` gained `attended` (auto-downgrades to
 unattended when `not sys.stdin.isatty()`, so a replay can never hang
 forever with no one able to answer it) and `max_escalations` (default 1,
 mirroring discovery's dead-end guard) constructor params, and `cua replay`
-gained `--unattended`. Evidence: `evidence/replay-8d7c37e2ab/` (attended,
+gained `--unattended`. Evidence: `evidence/replay-f4907b57e1/` (attended,
 recovers) via `scripts/demo_replay_escalation.py`; the unattended
 skip-and-mark path is covered live in the same script's sibling test and
 in `tests/test_replay_escalation.py::TestEscalate`. Pulled forward part of
@@ -155,11 +155,13 @@ validator correctly rejects it now.
 
 ### 2. Per-step replay observability
 
-**Why:** `evidence/replay-57f98faa3e/*.jsonl` is three lines —
+**Why:** before this fix, a replay's `.jsonl` was three lines —
 `replay_started`, `outputs`, `replay_succeeded`. No per-step events, no
 `resolved_via`, no timings, and the `ReplayResult` is only printed to
 stdout, never written to evidence. Requirement 3.5 asks for per-step
-observability and `obslog/logger.py`'s own docstring claims it.
+observability and `obslog/logger.py`'s own docstring claims it. (The
+specific pre-fix run this was diagnosed against wasn't kept as separate
+evidence — see the Status note below.)
 
 - [x] Log `step_started` / `step_finished` with `resolved_via` and duration.
 - [x] Write the `ReplayResult` JSON into the run's evidence directory.
@@ -170,12 +172,14 @@ project — `resolved_via` as a drift metric — visible in evidence.
 **Status:** Done. `run()` now delegates to `_execute()` and writes
 `result.json` into the evidence dir regardless of which return path fired,
 so every failure/business_outcome/success path gets it for free. Verified
-live: `evidence/replay-7bceff898b/`'s log went from 3 lines to 13
+live during development: the log went from 3 lines to 13
 (`step_started`/`step_finished` × 5 steps + `outputs` + the terminal
-event), each `step_finished` carrying `resolved_via` and `duration_ms`.
-Not committed as separate evidence — folded into the Phase 2 re-record
-pass instead of regenerating the curated set 3-4 times as items 3/5/6
-below also touch it.
+event), each `step_finished` carrying `resolved_via` and `duration_ms` —
+that specific before/after run wasn't committed as separate evidence
+(folded into the Phase 2 re-record pass instead of regenerating the
+curated set 3-4 times as items 3/5/6 below also touch it), but the same
+shape is visible today in any committed replay run, e.g.
+`evidence/replay-bba6a99ea2/`.
 
 ### 3. Verify the checking-account condition
 

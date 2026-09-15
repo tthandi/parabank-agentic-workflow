@@ -73,8 +73,9 @@
       "on_failure": "hard_fail",
       "retry": null,
       "business_outcome_code": null,
-      "business_outcome_signal": null,
-      "business_outcome_unknown_code": null
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
     },
     {
       "id": "step-2-fill",
@@ -96,8 +97,9 @@
       "on_failure": "hard_fail",
       "retry": null,
       "business_outcome_code": null,
-      "business_outcome_signal": null,
-      "business_outcome_unknown_code": null
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
     },
     {
       "id": "step-3-click",
@@ -129,8 +131,9 @@
       "on_failure": "business_outcome",
       "retry": null,
       "business_outcome_code": "login_failed",
-      "business_outcome_signal": "The username and password could not be verified.",
-      "business_outcome_unknown_code": "login_state_unknown"
+      "business_outcome_confirm_text": "The username and password could not be verified.",
+      "business_outcome_unknown_code": "login_state_unknown",
+      "business_outcomes": []
     },
     {
       "id": "step-4-click",
@@ -156,12 +159,13 @@
       },
       "on_failure": "retry",
       "retry": {
-        "max_attempts": 2,
+        "max_retries": 2,
         "backoff_ms": 500
       },
       "business_outcome_code": null,
-      "business_outcome_signal": null,
-      "business_outcome_unknown_code": null
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
     },
     {
       "id": "step-5-extract",
@@ -183,8 +187,9 @@
       "on_failure": "hard_fail",
       "retry": null,
       "business_outcome_code": null,
-      "business_outcome_signal": null,
-      "business_outcome_unknown_code": null
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
     }
   ],
   "success_checkpoint": {
@@ -194,5 +199,12 @@
     "timeout_ms": 5000
   },
   "created_from_run_id": "discovery-7d6b778bd1",
-  "created_at": "2026-09-03T05:09:55.816936+00:00"
+  "created_at": "2026-09-03T05:09:55.816936+00:00",
+  "approval": "approved",
+  "replay_stats": {
+    "runs": 3,
+    "successes": 2,
+    "fallback_rate": 0.0,
+    "last_run_at": "2026-09-14T10:26:35.210448+00:00"
+  }
 }

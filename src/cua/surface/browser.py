@@ -11,10 +11,17 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    FrameLocator,
+    Page,
+    Playwright,
+    sync_playwright,
+)
 
 from cua.artifact.schema import Locator, LocatorStrategy
-from cua.replay.locator import LocatorResolutionError
+from cua.surface.control import ControlHeldByHumanError, Controller, SurfaceNotStartedError
 from cua.surface.types import Observation
 
 ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy kind)
@@ -23,17 +30,75 @@ ResolvedLocator = tuple[object, str]  # (playwright Locator, winning strategy ki
 class BrowserSurface:
     def __init__(self, headless: bool = False) -> None:
         self.headless = headless
-        self._playwright = None
+        self._playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
+        # Who may act on this session. Flipped by escalation/handoff.py and
+        # enforced here — see surface/control.py for why it lives on the
+        # session rather than on the handoff object.
+        self.controller: Controller = Controller.AUTOMATION
+        # Dialogs seen since start(), drained by the replay executor.
+        self.dialogs: list[dict] = []
+        self.dialog_action: str = "dismiss"
+
+    def _on_dialog(self, dialog) -> None:
+        self.dialogs.append({"type": dialog.type, "message": dialog.message, "action": self.dialog_action})
+        try:
+            dialog.accept() if self.dialog_action == "accept" else dialog.dismiss()
+        except Exception:
+            pass
+
+    def drain_dialogs(self) -> list[dict]:
+        """Hand over what was seen and reset. The caller decides what a
+        dialog means; the surface only guarantees one never wedges a step."""
+        seen, self.dialogs = self.dialogs, []
+        return seen
+
+    def set_controller(self, controller: Controller) -> None:
+        self.controller = controller
+
+    def _require_page(self) -> Page:
+        """One guard instead of nine asserts (see SurfaceNotStartedError)."""
+        if self.page is None:
+            import inspect
+
+            raise SurfaceNotStartedError(inspect.stack()[1].function)
+        return self.page
+
+    def _assert_automation_may_act(self, what: str) -> None:
+        """The single choke point for control transfer, mirroring how the
+        allowlist is enforced at one point rather than at each call site.
+
+        Guards ACTING, not observing: `observe()`/`text()`/`screenshot()`
+        stay open while a human holds control, because handoff itself needs
+        them (HandoffController.resume() observes to diff what the human
+        did) and because evidence capture should never be the thing that
+        stops working mid-incident.
+
+        Known gap: agent/loop.py's `_act` reaches through `.page` directly
+        rather than through this seam, so discovery isn't gated by this.
+        Discovery's handoff is sequentially safe today (control returns
+        before the loop continues); closing the gap properly means routing
+        discovery through the Surface seam, which is the same change
+        REPORT.md §4's surface-agnosticism claim needs.
+        """
+        if self.controller is not Controller.AUTOMATION:
+            raise ControlHeldByHumanError(what)
 
     def start(self, entry_url: str) -> None:
-        self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(headless=self.headless)
+        playwright = self._playwright = sync_playwright().start()
+        self.browser = playwright.chromium.launch(headless=self.headless)
         self.context = self.browser.new_context()
         self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
         self.page = self.context.new_page()
+        # An unexpected confirm()/alert() is one of the runtime conditions
+        # the brief names, and nothing handled it: Playwright leaves a dialog
+        # open, the step blocks until its timeout, and the failure reads as a
+        # locator problem rather than "the app asked a question". Dismiss by
+        # default — the conservative answer to a question nobody asked for —
+        # and record every one so replay can report it rather than swallow it.
+        self.page.on("dialog", self._on_dialog)
         self.page.goto(entry_url)
 
     def stop(self, save_trace_to: str | None = None) -> None:
@@ -57,12 +122,12 @@ class BrowserSurface:
             self.context = self.browser = self.page = self._playwright = None
 
     def observe(self) -> Observation:
-        assert self.page is not None
-        ax = self.page.locator("body").aria_snapshot()
-        text = self.page.inner_text("body")
+        page = self._require_page()
+        ax = page.locator("body").aria_snapshot()
+        text = page.inner_text("body")
         return Observation(
-            url=self.page.url,
-            title=self.page.title(),
+            url=page.url,
+            title=page.title(),
             aria_snapshot=ax,
             visible_text_excerpt=text[:2000],
         )
@@ -81,14 +146,17 @@ class BrowserSurface:
         matches on heading text that appears before the table does, so the
         very next step raced the fetch and failed with count()==0.
         """
-        assert self.page is not None
-        scope = self.page
+        self._assert_automation_may_act(f"resolve({strategy.kind})")
+        page = self._require_page()
+        scope: Page | FrameLocator = page
         for frame_selector in strategy.frame_path:
             scope = scope.frame_locator(frame_selector)
 
         if strategy.kind == "role":
             role, _, name = strategy.value.partition(":")
-            loc = scope.get_by_role(role, name=name) if name else scope.get_by_role(role)
+            # `role` comes from a recorded artifact, so it is a str at runtime;
+            # Playwright types it as a Literal of the ARIA role names.
+            loc = scope.get_by_role(role, name=name) if name else scope.get_by_role(role)  # type: ignore[arg-type]
         elif strategy.kind == "label":
             loc = scope.get_by_label(strategy.value)
         elif strategy.kind == "text":
@@ -112,47 +180,82 @@ class BrowserSurface:
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.1)
-        return None
 
-    def resolve(self, locator: Locator) -> ResolvedLocator | None:
+    def resolve(self, locator: Locator, wait_ms: int = 3000) -> ResolvedLocator | None:
         """Try each strategy in rank order; return the first that resolves
-        plus which strategy kind won, or None if every strategy failed."""
+        plus which strategy kind won, or None if every strategy failed.
+        `wait_ms` is exposed (rather than hardcoding resolve_strategy's own
+        default) so a test can drive this against a fake page without
+        waiting out a real 3s poll per missing strategy."""
         for strategy in locator.strategies:
-            found = self.resolve_strategy(strategy)
+            found = self.resolve_strategy(strategy, wait_ms=wait_ms)
             if found is not None:
                 return found, strategy.kind
         return None
 
-    def click(self, locator: Locator) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.click()
-        return winning_kind
+    def text(self, selector: str = "body") -> str:
+        """The seam replay/executor.py checkpoints and extraction go
+        through instead of reaching into `.page` directly (see finding
+        #16: REPORT.md #4 claims a desktop `Surface` would need nothing in
+        `replay/` to change, which wasn't true while replay called
+        `self.surface.page.inner_text(...)` itself)."""
+        page = self._require_page()
+        return page.inner_text(selector)
 
-    def fill(self, locator: Locator, value: str) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.fill(value)
-        return winning_kind
+    def count(self, selector: str) -> int:
+        page = self._require_page()
+        return page.locator(selector).count()
 
-    def select(self, locator: Locator, value: str) -> str:
-        resolved = self.resolve(locator)
-        if resolved is None:
-            raise LocatorResolutionError(locator, locator.strategies)
-        playwright_locator, winning_kind = resolved
-        playwright_locator.select_option(value)
-        return winning_kind
+    def is_visible(self, selector: str) -> bool:
+        page = self._require_page()
+        return page.locator(selector).is_visible()
+
+    def count_matching(self, locator: Locator) -> int:
+        """How many elements a Locator's first resolvable strategy matches.
+
+        Distinct from `resolve`, which treats "more than one" as a miss: for
+        a table, many matches is the expected and desired answer."""
+        page = self._require_page()
+        for strategy in locator.strategies:
+            if strategy.kind == "css":
+                scope: Page | FrameLocator = page
+                for frame_selector in strategy.frame_path:
+                    scope = scope.frame_locator(frame_selector)
+                return scope.locator(strategy.value).count()
+        return 0
+
+    def table_cells_for(self, locator: Locator, cell_selector: str) -> list[list[str]]:
+        """Rows addressed by a schema Locator rather than a raw selector, so
+        `replay/` never has to know an app's markup."""
+        page = self._require_page()
+        for strategy in locator.strategies:
+            if strategy.kind == "css":
+                scope: Page | FrameLocator = page
+                for frame_selector in strategy.frame_path:
+                    scope = scope.frame_locator(frame_selector)
+                return self.table_cells(strategy.value, cell_selector, scope)
+        return []
+
+    def table_cells(self, row_selector: str, cell_selector: str, scope=None) -> list[list[str]]:
+        """All rows matching `row_selector`, each as its `cell_selector`
+        cells' inner texts — the one piece of table-reading replay/
+        needed from a raw Playwright Locator (row count + nth + cell
+        texts), pulled behind the seam the same as `text`/`count`."""
+        page = self._require_page()
+        rows = (scope or page).locator(row_selector)
+        return [rows.nth(i).locator(cell_selector).all_inner_texts() for i in range(rows.count())]
+
+    def goto(self, url: str) -> None:
+        self._assert_automation_may_act("goto")
+        page = self._require_page()
+        page.goto(url)
 
     def current_url(self) -> str:
-        assert self.page is not None
-        return self.page.url
+        page = self._require_page()
+        return page.url
 
     def screenshot(self, out_path: str) -> str:
-        assert self.page is not None
+        page = self._require_page()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        self.page.screenshot(path=out_path)
+        page.screenshot(path=out_path)
         return out_path

@@ -7,6 +7,7 @@ rewriting this file, not the loop.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -177,8 +178,11 @@ _TOOLS = [
 
 
 class LLMDecider:
-    def __init__(self, model: str = "claude-sonnet-5") -> None:
-        self.model = model
+    def __init__(self, model: str | None = None) -> None:
+        # Overridable without editing source: swapping model is the single
+        # most common reason to touch this class, and hardcoding it meant a
+        # cost/latency experiment required a code change.
+        self.model = model or os.environ.get("CUA_MODEL", "claude-sonnet-5")
         self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
     def decide(
@@ -206,7 +210,9 @@ class LLMDecider:
             ax_excerpt=observation.aria_snapshot[:8000],
             history="\n".join(history) if history else "(none yet)",
         )
-        resp = self.client.messages.create(
+        # The SDK types `tools` as a union of concrete TypedDicts; ours are
+        # plain dicts built above, which is valid at runtime.
+        resp = self.client.messages.create(  # type: ignore[call-overload]
             model=self.model,
             max_tokens=1024,
             system=SYSTEM_PROMPT,
@@ -230,7 +236,7 @@ class LLMDecider:
 
         inp = tool_use.input
         return AgentAction(
-            kind=tool_use.name,  # type: ignore[arg-type]
+            kind=tool_use.name,
             target_description=inp.get("target_description"),
             value=inp.get("value") or inp.get("url"),
             expected_text_contains=inp.get("expected_text_contains"),

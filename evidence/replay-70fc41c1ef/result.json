@@ -1,0 +1,15 @@
+{
+  "kind": "failure",
+  "capability_id": "parabank.find-transactions-over-amount",
+  "capability_version": "0.3.0",
+  "outputs": {},
+  "business_outcome_code": null,
+  "failed_step_id": "approval",
+  "expected": "an approved capability for unattended replay",
+  "observed": "capability is 'draft' \u2014 run it attended, then `cua approve` it",
+  "recovered_steps": [],
+  "resolved_via": {},
+  "escalated": false,
+  "intervention_path": null,
+  "evidence_path": "evidence/replay-70fc41c1ef"
+}

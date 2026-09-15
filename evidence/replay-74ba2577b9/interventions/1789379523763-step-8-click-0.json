@@ -1,0 +1,10 @@
+{
+  "run_id": "replay-74ba2577b9",
+  "capability_id": "parabank.transfer-funds",
+  "goal": "Replay of capability 'parabank.transfer-funds' v0.1.0: Destination account number, as shown in the to account # dropdown.",
+  "current_step_id": "step-8-click",
+  "reason": "operator declined risky-action confirmation",
+  "screenshot_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-74ba2577b9/escalation-step-8-click.png",
+  "url": "http://localhost:8080/parabank/transfer.htm",
+  "created_at": "2026-09-14T09:52:03.763766+00:00"
+}

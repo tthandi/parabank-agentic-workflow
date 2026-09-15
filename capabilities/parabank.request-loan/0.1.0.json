@@ -1,0 +1,314 @@
+{
+  "id": "parabank.request-loan",
+  "name": "Request a loan against an existing account",
+  "version": "0.1.0",
+  "description": "Logs in, opens Request Loan, applies for `loan_amount` with `down_payment` from `from_account`, and returns the new loan account number on approval — or the specific reason ParaBank gave for denying it.",
+  "target_app": "parabank",
+  "entry_url": "/index.htm",
+  "inputs": [
+    {
+      "name": "username",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Username' field.",
+      "enum_values": null,
+      "secret": false
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "required": true,
+      "description": "ParaBank login password. Never persisted — supply at replay time.",
+      "enum_values": null,
+      "secret": true
+    },
+    {
+      "name": "loan_amount",
+      "type": "float",
+      "required": true,
+      "description": "Loan amount requested, in dollars.",
+      "enum_values": null,
+      "secret": false
+    },
+    {
+      "name": "down_payment",
+      "type": "float",
+      "required": true,
+      "description": "Down payment offered, in dollars.",
+      "enum_values": null,
+      "secret": false
+    },
+    {
+      "name": "from_account",
+      "type": "string",
+      "required": true,
+      "description": "Account number the down payment is taken from.",
+      "enum_values": null,
+      "secret": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "new_account_id",
+      "type": "int",
+      "description": "Account number ParaBank opened for the approved loan.",
+      "source_locator": {
+        "description": "New loan account number",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#newAccountId",
+            "frame_path": []
+          }
+        ]
+      },
+      "item_shape": null
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Username",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"username\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "username",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-2-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Password",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "input[name=\"password\"]",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "password",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-3-click",
+      "action": "click",
+      "locator": {
+        "description": "Log In",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "button:Log In",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Log In",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": {
+        "description": "Left the login page for Accounts Overview",
+        "locator": null,
+        "expected_text_contains": "Accounts Overview",
+        "timeout_ms": 5000
+      },
+      "on_failure": "business_outcome",
+      "retry": null,
+      "business_outcome_code": "login_failed",
+      "business_outcome_confirm_text": "The username and password could not be verified.",
+      "business_outcome_unknown_code": "login_state_unknown",
+      "business_outcomes": []
+    },
+    {
+      "id": "step-4-click",
+      "action": "click",
+      "locator": {
+        "description": "Request Loan",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "link:Request Loan",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Request Loan",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-5-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Loan Amount:",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#amount",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "loan_amount",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-6-fill",
+      "action": "fill",
+      "locator": {
+        "description": "Down Payment:",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#downPayment",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "down_payment",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-7-select",
+      "action": "select",
+      "locator": {
+        "description": "From account #:",
+        "strategies": [
+          {
+            "kind": "css",
+            "value": "#fromAccountId",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": "from_account",
+      "value_literal": null,
+      "risk": "safe",
+      "checkpoint": null,
+      "on_failure": "hard_fail",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": null,
+      "business_outcomes": []
+    },
+    {
+      "id": "step-8-click",
+      "action": "click",
+      "locator": {
+        "description": "Apply Now",
+        "strategies": [
+          {
+            "kind": "role",
+            "value": "button:Apply Now",
+            "frame_path": []
+          },
+          {
+            "kind": "text",
+            "value": "Apply Now",
+            "frame_path": []
+          }
+        ]
+      },
+      "value_param": null,
+      "value_literal": null,
+      "risk": "risky",
+      "checkpoint": {
+        "description": "Loan approval panel revealed",
+        "locator": null,
+        "expected_text_contains": "Congratulations",
+        "timeout_ms": 10000
+      },
+      "on_failure": "business_outcome",
+      "retry": null,
+      "business_outcome_code": null,
+      "business_outcome_confirm_text": null,
+      "business_outcome_unknown_code": "loan_decision_unknown",
+      "business_outcomes": [
+        {
+          "code": "insufficient_funds_and_down_payment",
+          "confirm_text": "We cannot grant a loan in that amount with your available funds and down payment."
+        },
+        {
+          "code": "insufficient_funds_for_down_payment",
+          "confirm_text": "You do not have sufficient funds for the given down payment."
+        },
+        {
+          "code": "insufficient_down_payment",
+          "confirm_text": "We cannot grant a loan in that amount with the given down payment."
+        },
+        {
+          "code": "insufficient_funds",
+          "confirm_text": "We cannot grant a loan in that amount with your available funds."
+        }
+      ]
+    }
+  ],
+  "success_checkpoint": {
+    "description": "Loan approval visible on the Request Loan page",
+    "locator": null,
+    "expected_text_contains": "Congratulations",
+    "timeout_ms": 10000
+  },
+  "created_from_run_id": "discovery-04eeb419f1",
+  "created_at": "2026-09-14T10:25:37.010524+00:00",
+  "approval": "draft",
+  "replay_stats": null
+}

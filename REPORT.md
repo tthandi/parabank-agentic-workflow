@@ -2,253 +2,230 @@
 
 ## 1. Architecture
 
-**Stack:** Python + Playwright (sync API) + Pydantic + Claude (Sonnet 5).
-Single process, synchronous — one discovery run or one replay is a single
-bounded task; a queue/worker pool would solve a scaling problem this
-project explicitly says not to solve (brief §9). Playwright over
-Puppeteer/Selenium for three reasons that mattered in practice:
-`aria_snapshot()` gives a compact, LLM-ready accessibility-tree dump for
-free; `context.tracing` gives a replayable trace (`evidence/*/trace.zip`)
-with zero extra code; its locator API is the actual mechanism behind the
-artifact's locator fallback chain, not just a convenience.
+**Stack:** Python + Playwright (sync) + Pydantic + Claude. Single process,
+synchronous — one discovery run or one replay is a bounded task, and a
+queue/worker pool solves a scaling problem the brief says not to solve.
+Playwright for three reasons that paid off: `aria_snapshot()` is a compact
+LLM-ready accessibility dump for free, `context.tracing` gives a replayable
+trace per run with no extra code, and its locator API *is* the mechanism
+behind the artifact's fallback chain rather than a convenience around it.
 
-**Module boundaries** (`src/cua/`): `surface` (the only module that
-imports Playwright), `agent` (the LLM loop; imports `surface`+`artifact`,
-never the reverse), `artifact` (schema/recorder/store — no Playwright
-dependency, unit-testable in isolation), `replay` (depends on `artifact`+
-`surface`, not `agent` — constructible without the LLM client), `safety`
-and `escalation` (both depended on by `agent` and `replay`, so a guardrail
-or handoff mechanism added once applies to both paths).
+**Module boundaries** (`src/cua/`): `surface` alone imports Playwright;
+`artifact` imports neither Playwright nor `anthropic` and is unit-testable
+alone; `replay` needs no LLM client; `safety` and `escalation` are shared, so
+a guardrail added once applies to discovery and replay together.
+`tests/test_module_boundaries.py` enforces this by grep rather than trusting
+it — including that `replay/` holds no app-specific selector, which is what
+makes §4's portability claim true rather than aspirational.
 
-**Key trade-off:** `agent/loop.py`'s natural-language → Locator resolution
-(`resolve_natural_target`) is a heuristic cascade (role → label →
-placeholder → text → a "label text → following `<input>`" fallback for
-this app's `<p><b>Label</b></p><input>` pattern with no accessible name),
-not a second model call — cheaper, and it's what makes harvested
-strategies come from the resolved DOM node rather than the model's guess
-(§2). Real failure mode found live: the model said "Username textbox"
-instead of "Username," matching nothing, and — worse — a failed resolution
-was invisible to the model, which just repeated the identical guess until
-`max_steps`. Fixed by making `history` a list of outcome-annotated lines
-(`fill("Password") -> FAILED - ...`) instead of raw actions, so a failure
-is visible on the next turn, plus a suffix-stripping retry as defense in
-depth.
+**Key trade-off:** natural-language → Locator resolution is a heuristic
+cascade (role → label → placeholder → text → a text-node-anchored "nearest
+following form control"), not a second model call — cheaper, and it makes
+harvested strategies come from the resolved DOM node rather than the model's
+phrasing. Live failure that shaped it: a failed resolution was invisible to
+the model, which repeated the identical guess until `max_steps`. `history`
+is now outcome-annotated, so a failure is visible on the next turn.
 
 ## 2. Artifact schema
 
-`Capability`: `inputs`/`outputs` (typed), an ordered `steps: list[Step]`,
-`success_checkpoint`. Three decisions carry the design:
+`Capability`: typed `inputs`/`outputs`, ordered `steps`, a
+`success_checkpoint`, and review state. Four decisions carry it.
 
-**`Locator` is a ranked list of strategies, not one selector.** Replay
-tries each in order and records `resolved_via` — which one actually won,
-per step, per replay — the concrete per-tenant drift signal §4 needs
-("role degraded to css on 30% of replays" becomes measurable, not a
-guess).
+**`Locator` is a ranked strategy list, not one selector.** Replay records
+`resolved_via` — which strategy actually won, per step, per replay — the
+drift signal §4 needs. `_harvest_strategies` only emits a strategy the DOM
+genuinely supports; it never fabricates a `role`/`label` alternative for an
+element that has none, because a fallback that can never resolve makes
+`resolved_via` lie about drift, which is worse than an honestly short chain.
 
-**`Step.on_failure` distinguishes a *checkpoint mismatch* from a
-*resolution failure*** — a locator resolving to nothing is always a hard
-fail (the surface is broken); `on_failure` governs what it means when the
-action succeeded but the app answered with something else:
-`business_outcome`, `retry`, or `hard_fail`. A related, sharper distinction
-added after the first live replay: `Step.business_outcome_signal` — a
-checkpoint miss alone doesn't prove *why* (the login checkpoint failing
-could mean bad credentials, or just a slow page). The login step now
-requires ParaBank's actual "could not be verified" banner text before
-reporting `login_failed`; absent that too, it reports a distinct
-`login_state_unknown` rather than guessing. Enforced structurally: a
-`Capability` validator rejects `business_outcome_signal` set without its
-paired `business_outcome_unknown_code`.
+**`on_failure` separates a checkpoint mismatch from a resolution failure.**
+A locator resolving to nothing is always a hard fail — the surface is
+broken. `on_failure` governs the other case: the action worked, the app
+answered differently. A checkpoint miss alone doesn't prove *why* (bad
+credentials, or a slow page), so a named outcome requires the app's own
+banner text, and `business_outcome_unknown_code` covers "we don't know" —
+itself a legitimate answer, not licence to guess. `Step.business_outcomes`
+extends this to many `(confirm_text → code)` rules: Request Loan
+distinguishes four denial reasons in its own JS, and collapsing them to a
+bare "denied" discards the only part a caller can act on.
 
-**`OutputSpec.type` grew an `"array"` variant with `item_shape`**, found
-wiring the first real capability — a filtered transaction list doesn't
-fit the original scalar-only type, and a JSON-string workaround would
-defeat the point of a typed contract.
+**Extraction is declarative.** `OutputSpec` carries a `source_locator` for
+scalars or a `TableSpec` for rows (row locator, column map, numeric fields,
+debit/credit pair, empty-state indicator, filter keyed to an input param),
+with `derived_from`/`derive` for counts. It began as a hand-written reader
+gated on one capability id, with that app's selectors literal in the engine
+— which quietly made §4's claim false. Moving the table shape into the
+artifact is what lets a new capability need no engine change at all.
 
-**Schema invariants are enforced, not just documented:** `extra="forbid"`
-on every artifact model, plus `model_validator`s rejecting a click/fill/
-select with no locator, fill/select with both-or-neither of
-`value_param`/`value_literal`, a non-semver `version`, and a
-`value_param` referencing an undeclared input. `ArtifactStore.save()`
-refuses to silently overwrite an existing version (`force=True` to
-override deliberately) — `ArtifactRecorder.record()` takes a
-caller-supplied `version`, never auto-incremented, since whether a
-re-record is a meaningful bump is a judgment call. A secret input
-(`ParamSpec.secret`) is never expected in `--params`; `cua replay` reads
-it from a `CUA_<NAME>` env var instead, mirroring how `cua run` already
-kept credentials out of `--goal`.
+**Invariants are enforced, not documented.** `extra="forbid"` everywhere,
+plus validators rejecting a click/fill/select with no locator, fill/select
+with both-or-neither value source, a non-semver version, a `value_param` or
+`derived_from` naming something undeclared, and an **IRREVERSIBLE step with
+no checkpoint** (§6). The store refuses to overwrite a version silently and
+never auto-increments. Seven committed artifacts across four capabilities
+still validate through every schema change above — asserted by a test, and
+why the two field renames used `validation_alias`.
 
-**Recorder: mechanical vs. hand-specified.** Login fill/click steps and
-their locators come straight from what discovery resolved. Two things are
-deliberately *rewritten*: the account-selection click (the model's literal
-"click 13566" only matches this one seed's account id — rewritten to a
-structural `#accountTable tbody tr:first-child a` locator, on the
-documented assumption that ParaBank lists CHECKING first — see §7), and
-the `min_amount` parameter plus typed output (a one-time decision matching
-the goal's intent, not re-derived per transcript).
+**Recorder: mechanical vs. hand-specified.** Steps and locators come from
+what discovery resolved; each deliberate rewrite is documented — chiefly
+replacing a literal account-number click with a structural locator, since
+the model's "click 13566" matches one seed only.
 
 ## 3. Determinism & error handling
 
-Replay never calls the LLM. Determinism comes from fixed step order,
-locator fallback with no free-form interpretation, and checkpoints as
-explicit assertions.
+Replay never calls the LLM. Determinism comes from fixed step order, locator
+fallback with no free interpretation, and checkpoints as explicit assertions.
 
-**Two real timing bugs, one root cause**, found running replay live:
-`Locator.count()` doesn't auto-wait the way `.click()` does, and this app
-populates content via async fetch *after* the page renders. The
-post-login checkpoint matches on heading text that appears before the
-accounts table's fetch resolves, so the next step raced an empty
-`<tbody>`; fixed by polling `count()==1` for up to 3s instead of checking
-once. One level deeper, `#transactionTable` the *element* exists
-immediately (that fix alone didn't cover it) — its rows populate later,
-and the first live replay silently returned `match_count=0` for a persona
-that should have had 4. Fixed with a dedicated wait for either real rows
-or the app's own `#noTransactions` indicator, so "still loading" is never
-misread as the legitimate empty-result outcome. A third bug in the same
-family: a failed `surface.start()` (e.g. an unreachable target) could
-leak the browser process and skip trace evidence entirely, because the
-early-return sat outside the `try/finally` that calls `surface.stop()`.
+**The guarantee:** `ReplayExecutor.run()` returns a `ReplayResult`; it does
+not raise. A caller — an agent, a scheduler, the CLI — never wraps it to
+find out what happened. That required a per-step catch-all plus an outer
+net: a Playwright click timeout, the most common real failure there is,
+previously escaped the taxonomy entirely with no result and no evidence.
+Caller misuse (wrong argument types) is a `FAILURE` with evidence too,
+since for an agent-invocable capability that is the likeliest failure of all.
 
-**The three-way taxonomy** (`ReplayResult.kind`) — demonstrated live for
-all three: `SUCCESS` (`alice_h` → 4 transactions, exact match against
-`fixtures/seeded.json`); `BUSINESS_OUTCOME` twice (`bob_thin` →
-`no_matching_transactions`; wrong password → `login_failed`, confirmed via
-the real banner per §2); `FAILURE` (unreachable `entry_url` →
-`failed_step_id`, `expected`/`observed` from the real navigation error).
+**Async population, found live.** `Locator.count()` doesn't auto-wait and
+this app fills content by fetch after render, so a checkpoint on heading
+text let the next step race an empty `<tbody>`. Deeper: the table *element*
+exists immediately and its rows do not — the first live replay returned zero
+matches for a persona with four. Hence `TableSpec.empty_indicator`; "still
+loading" must never read as the legitimate empty result.
 
-**Retry is proven, not just implemented.** The account-click step's
-checkpoint is the same AJAX-timing hazard above, so it carries
-`on_failure="retry"` for real in the committed capability. A fake-surface
-test pins both directions (recovers on attempt 2; exhausts and escalates
-when it never does) — a live network-throttled recovery was judged lower
-value than the time it would cost given the fake surface already controls
-timing precisely (see §7).
+**The taxonomy, live-evidenced.** `SUCCESS`; `BUSINESS_OUTCOME` four ways
+(`no_matching_transactions`, `login_failed`, two distinct loan denials from
+one step); `FAILURE` with `failed_step_id`/`expected`/`observed` from a real
+error. Other runtime conditions the brief names: dialogs are dismissed and
+reported as recovered steps, mid-flow session expiry is a `session_expired`
+outcome rather than a misleading checkpoint failure on the *next* step,
+retry backs off exponentially, and a run deadline bounds what per-checkpoint
+timeouts individually cannot.
 
 ## 4. Heterogeneity & multi-tenant
 
-**Surface abstraction.** `Observation` and `Locator` are both
-Playwright-independent in shape; `BrowserSurface` is the only seam
-(`observe()`/`resolve()`/act methods). A legacy frameset app needs
-`LocatorStrategy.frame_path` (already in the schema, exercised by the
-frame-descent loop, just not by anything in ParaBank) walked deeper, not a
-new abstraction. A desktop app needs a different `Surface` built on an OS
-accessibility API producing the same `Observation` shape — nothing in
-`artifact/` or `replay/` would change, since neither imports Playwright.
+**Surface abstraction.** `Observation` and `Locator` are
+Playwright-independent in shape and `BrowserSurface` is the only seam, so a
+desktop `Surface` over an OS accessibility API needs no change in
+`artifact/` or `replay/` — literally true and grep-tested now that
+extraction lives in the schema. A legacy frameset needs
+`LocatorStrategy.frame_path`, which discovery now *records* (the cascade
+searches frames and stamps the chain onto each strategy); it was previously
+replayable but not recordable, which is half a seam.
 
-**Multi-tenant reuse.** `resolved_via`, tracked per step per replay, is
-the concrete mechanism: a tenant with different CSS but the same semantic
-labels keeps working automatically (role/text strategies still match;
-only the `css` fallback differs, ranked last for exactly this reason).
-That gives a drift signal for free — a step whose primary strategy
-degrades to fallback more often than baseline is measurably the one to
-review, not a guess. What's correctly *not* built (brief §9): per-tenant
-override storage, a drift dashboard, route canonicalization
-(`/item/12345 → /item/:id`). The schema doesn't block adding them — a
-`tenant_overrides` map merged ahead of base strategies is a natural,
-additive extension.
+**Multi-tenant reuse.** `entry_url` is stored tenant-relative, so one
+artifact is pointed at a second institution with `--base-url` rather than by
+editing the JSON — the "re-recorded per tenant" outcome the brief warns
+about. Locator reuse rests on ranked strategies: a tenant with different CSS
+but the same semantic labels keeps working, since `css` is ranked last for
+exactly that reason. `resolved_via` makes the drift measurable, and
+`ReplayStats.fallback_rate` now records it per capability — a step degrading
+from `role` to `css` is measurably more fragile *before* it breaks. Not
+built (brief §9): per-tenant override storage, a drift dashboard, route
+canonicalisation. A `tenant_overrides` map merged ahead of base strategies
+is the natural additive extension.
 
 ## 5. Escalation & handoff
 
-**Both paths escalate, not just discovery.** The model has an explicit
-`stuck` tool; live proof it's not decorative: a goal built around a fact
-confirmed live (ParaBank has no close-account option) reliably produces a
-genuine `stuck` call (`evidence/discovery-9ecb5cc835/`). Originally replay
-only ever returned `FAILURE` on a dead end — locator exhaustion, a
-`hard_fail` checkpoint, an `IRREVERSIBLE` block, a declined `RISKY`
-confirmation, an allowlist violation, retries exhausted all now route
-through the *same* escalation seam discovery uses
-(`evidence/replay-f4907b57e1/`).
+**Both paths escalate.** The model has an explicit `stuck` tool, proven
+against a goal ParaBank genuinely cannot satisfy. In replay every dead end —
+locator exhaustion, a hard-fail checkpoint, an IRREVERSIBLE block, a declined
+confirmation, a policy violation, exhausted retries, an unexpected surface
+error — routes through that same seam.
 
-**Control transfer.** Headed by default means the "live session" a human
-takes over is literally the same window automation was driving — handoff
-is a state machine over *who may act next*, not a session-migration
-problem. "What did the human do" is answered mechanically: snapshot
-`url`+`aria_snapshot` before ceding control and again on resume, diff
-them — no narration required, and a click that changed nothing is
-honestly reported as such.
+**Control transfer is enforced, not just recorded.** Headed by default means
+the session a human takes over is the same window automation was driving, so
+handoff is a state machine over *who may act next*, not session migration.
+The session itself now refuses to be driven while a human holds it; before,
+that was guaranteed only by the accident that the mock console blocks on
+`input()`. Observation stays permitted, because "what did the human do" is
+answered mechanically by diffing `url`+`aria_snapshot` across the handoff.
 
-**Escalation-and-retry isn't blind repetition.** A human resuming a
-*replay* may have already accomplished the step manually (e.g. navigated
-forward themselves) rather than performed the literal failed action —
-re-running it would be wrong, not idempotent. Retry first re-checks the
-step's checkpoint; only if still unmet does it re-run the action
-(`evidence/replay-f4907b57e1/`: a corrupted locator escalates, a simulated
-operator navigates directly, and the step is recognized as already done).
-Separately, an escalation loop for a genuinely unsupported discovery
-action doesn't converge on its own — the model re-hits the identical wall
-every time it's resumed — so `StoppingConditions.max_escalations` (default
-1) is a fourth dead-end guard alongside `max_steps`/`timeout`.
+**Resuming isn't blind repetition.** A human may have accomplished the step
+themselves, so retry re-checks the step's checkpoint before re-running the
+action. That path is what makes an IRREVERSIBLE step completable at all:
+policy forbids automation from performing it, a person opens the account by
+hand, hands control back, and replay recognises it as done and continues to
+return the typed output. A stuck run with nobody available still persists
+its intervention and ends cleanly — routing means the context survives, not
+that someone is present.
 
-**Mocked vs. real:** the operator UI is a terminal `input()` prompt,
-explicitly out of scope (brief §3.6). Real: the persisted intervention
-JSON, the pause/cede/resume state machine, the diff-based action log. No
-interactive terminal exists in this environment, so both demo scripts
-simulate the human side by having `input()` perform a real Playwright
-action against the *same live `page`* before returning — a real click
-would look identical to the system, which is the actual claim being
-proven. `RISKY` steps get a separate, lighter gate
-(`confirm_risky_action` — yes/no, not a full handoff, since forcing every
-routine risky step through browser takeover is disproportionate); this
-capability has none, but both `RISKY`-confirmed/declined and
-`IRREVERSIBLE`-blocked are unit-tested against a fake surface.
+**Mocked vs. real.** The operator console is a terminal prompt, explicitly
+out of scope. Real: the persisted intervention JSON, the pause/cede/resume
+state machine, the enforced control gate, the diff-based action log. Demo
+scripts simulate the human by performing a real action against the same live
+page — indistinguishable to the system, which is the claim being made.
 
 ## 6. Safety
 
-**Allowlist, checked before acting, not just after.** `enforce_url` is
-called before every `NAVIGATE` and before clicking a resolved anchor's
-`href`, in both discovery and replay — a post-only check (the original
-design) lets the browser briefly load a disallowed page first. Three real
-gaps closed: path traversal (`/parabank/../admin` passed the old raw
-`startswith` check; `posixpath.normpath` now collapses it before
-comparing), a bare route with no trailing content (`/parabank` was
-rejected by a `/parabank/*` entry), and no scheme restriction. Replay
-previously had no ongoing URL check at all beyond the initial
-`entry_url`; both surfaces are now checked pre- *and* post-action.
+**Allowlist, checked before acting.** `enforce_url` runs before every
+navigate and before clicking a resolved anchor's href, on both paths; a
+post-only check lets the browser load a disallowed page first. Gaps closed:
+path traversal (percent-encoded included), bare routes, scheme, and host
+**plus port** — a bare-host entry stays port-agnostic by choice, but
+`localhost:8080` can be pinned, since "any service on this machine" is the
+wrong granularity for a policy naming an app instance. `target_app` binds an
+artifact to the policy governing it.
 
-**Risk classification** (`RiskLevel`/`safety/policy.py`): SAFE/REVERSIBLE
-proceed; RISKY requires confirmation; IRREVERSIBLE is blocked unattended
-and always routed to a human. No step in the one recorded capability is
-above SAFE — the gating code is real and unit-tested (§5), not exercised
-by a live risky replay (§7).
+**Risk is classified at record time** from a declarative table, matched on
+exact normalised text *and* element role: "Transfer Funds" (the nav link)
+stays SAFE while "Transfer" (the button) is RISKY, and where link and button
+share identical text the role separates them — gating a step that does
+nothing is how you train an operator to click through confirmations. RISKY
+requires confirmation, IRREVERSIBLE is blocked unattended, and both are
+live-evidenced across every branch. The paired invariant (an IRREVERSIBLE
+step *requires* a checkpoint) exists because without one the handoff
+dead-ends: the person performs the irreversible act, hands back, and the
+replay fails anyway. That happened live before the invariant existed.
 
-**Redaction: shape-based and value-based, and recursive.** `redact()`
-catches SSN/account-number-shaped text anywhere it appears; that alone
-missed the fixture password, which has no detectable shape —
-`is_sensitive_field()` closes that by field purpose. A more fundamental
-leak, found the same way: credentials embedded directly in the
-natural-language `goal` got logged verbatim by `run_started`, since no
-field name exists there to key redaction on — fixed architecturally by
-moving credentials to a separate `credentials` parameter, never through
-`goal`. Redaction was also flat (top-level string fields only) —
-`RunLogger` now recurses through nested dicts/lists, and
-`register_secret()` scrubs a run's known secret values by exact match
-anywhere in the record, including inside a model-generated `reason` string
-that happens to repeat one. `tests/test_evidence_redaction.py` greps the
-real committed evidence for the fixture password.
+**Unattended replay requires approval.** Everything records as `draft`;
+`cua approve` is a separate human act, and attended replay deliberately
+still runs drafts or approval could never be earned. This is the control a
+bank actually asks for: not "is this allowlisted" but "has someone signed
+off that this may run unsupervised".
 
-**Limits, plainly:** shape-based redaction is pattern-matching and misses
-anything that doesn't match; field-based redaction depends on the model
-naming a field's purpose reasonably. Neither substitutes for keeping
-regulated data out of a natural-language goal in the first place, which
-the credentials fix now enforces structurally.
+**Redaction is shape-based, value-based and recursive.** Shape catches
+SSN/account/card numbers — including the separated forms a banking UI
+actually renders — and email; field-name catches a credential with no
+detectable shape; `register_secret()` scrubs known values by exact match at
+any depth. The structural fix mattered most: credentials travel out-of-band
+from the natural-language goal, since free text has no field name to key
+redaction on. A test greps the real committed evidence for the fixture
+password.
+
+**Limits, plainly.** Shape matching misses what it doesn't match, and
+field-name matching depends on sensible labels. Dates and phone numbers are
+deliberately *not* shape-redacted: transaction dates are a capability's
+legitimate output, and eating them to prevent leaking data these flows never
+surface is a bad trade. Neither substitutes for keeping regulated data out
+of the goal to begin with.
 
 ## 7. Cuts
 
-- **Second capability** (transfer-funds) exercising `RISKY` confirmation
-  and a `validation_error` outcome with a *live* replay. `carol_low`'s
-  below-minimum-savings seeding anticipated this and sits unused. The
-  safety code path is implemented and unit-tested, not live-evidenced.
-- **Live network-throttled retry recovery.** The mechanism is proven
-  against a fake surface that controls exactly which poll succeeds —
-  judged more reliable and a better use of time than a live throttled run.
-- **Per-tenant override storage / drift dashboard / route
-  canonicalization.** §4 gives the mechanism (`resolved_via`) and the
-  natural schema extension; building storage/UI around it is the scaling
-  infrastructure the brief says not to build prematurely (§9).
-- **Desktop surface, legacy frameset target.** `frame_path` exists and is
-  exercised in code; no frameset fixture was built. A desktop `Surface` is
-  a documented seam (§4), not built.
-- **Full operator console.** Explicitly out of scope (§3.6); a terminal
-  prompt stands in, demonstrated for real in both `scripts/demo_*.py`.
-- **Stretch goals** (capability catalog, code generation, confidence/
-  approval gating, multi-run stability scoring) — not attempted; depth
-  over breadth on schema, replay+error handling, and escalation instead.
+- **Live network-throttled retry.** Pinned instead by a fake surface that
+  controls exactly which poll succeeds — more reliable and cheaper.
+- **Per-tenant override storage, drift dashboard, route canonicalisation.**
+  §4 gives the mechanism and the extension point; the storage and UI around
+  it are the scaling infrastructure the brief says not to build early.
+- **Desktop surface and a frameset fixture.** Seams with code behind them
+  (`frame_path` is recorded and replayed) but no target to run against.
+- **Full operator console.** Out of scope; a terminal prompt stands in and
+  the handoff mechanism underneath it is real.
+- **A `validation_error` on transfer-funds.** Worth recording why: ParaBank
+  does **not** validate a transfer against the source balance — an
+  over-balance transfer from a $6 account and a negative amount both report
+  success. Its only error is a generic internal-error banner, which the typed
+  `float` contract now prevents a caller from triggering. So that branch is
+  unit-tested, and the real specific-denial outcome was built where it
+  actually exists: Request Loan, two distinct codes from one step.
+- **Stretch goals: two taken, four declined.** Taken: the **capability
+  catalog** (artifacts as tool schemas an agent discovers and calls by name,
+  secret params omitted entirely — a tool schema is the one place a model is
+  invited to invent a plausible value for anything listed) and **approval
+  gating** above. Declined: code generation shows no new judgment; assisted
+  LLM fallback puts the model back in the production path this system exists
+  to remove; canonicalisation is partly subsumed by `--base-url`; multi-run
+  stability is redundant once approval records a success ratio.
+
+**What I'd do next:** a real operator console over the existing handoff seam,
+a second tenant variant to exercise `--base-url` and `tenant_overrides` for
+real, and a desktop `Surface` — the one claim in §4 still resting on argument
+rather than evidence.

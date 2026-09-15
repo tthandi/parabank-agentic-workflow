@@ -16,6 +16,11 @@ class VersionExistsError(Exception):
     pass
 
 
+def _is_semver(v: str) -> bool:
+    parts = v.split(".")
+    return len(parts) == 3 and all(p.isdigit() for p in parts)
+
+
 class ArtifactStore:
     def __init__(self, root: Path = DEFAULT_CAPABILITIES_DIR) -> None:
         self.root = root
@@ -44,12 +49,13 @@ class ArtifactStore:
 
     def latest_version(self, capability_id: str) -> str:
         cap_dir = self.root / capability_id
-        versions = [p.stem for p in cap_dir.glob("*.json")] if cap_dir.is_dir() else []
+        all_stems = [p.stem for p in cap_dir.glob("*.json")] if cap_dir.is_dir() else []
+        # Any non-semver *.json filename in the directory (a stray note, a
+        # backup copy) used to crash this with an uncaught ValueError from
+        # int() — ignore it instead of letting an unrelated file break
+        # "what's the latest version."
+        versions = [v for v in all_stems if _is_semver(v)]
         if not versions:
             raise FileNotFoundError(f"no saved versions for capability '{capability_id}'")
 
-        def _key(v: str) -> tuple[int, int, int]:
-            parts = v.split(".")
-            return tuple(int(p) for p in parts[:3]) if len(parts) == 3 else (0, 0, 0)
-
-        return max(versions, key=_key)
+        return max(versions, key=lambda v: tuple(int(p) for p in v.split(".")))

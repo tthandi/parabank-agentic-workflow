@@ -11,8 +11,23 @@ UI/console itself (see REPORT.md #5 for the fuller design).
 
 from __future__ import annotations
 
+import sys
+
 from cua.escalation.handoff import HandoffController
 from cua.escalation.intervention import InterventionRequest
+
+
+def operator_available() -> bool:
+    """Whether there is a human who could actually answer.
+
+    Checked in ONE place so neither caller can forget it. ReplayExecutor had
+    its own `attended and sys.stdin.isatty()` guard from early on; the
+    discovery loop never got one, so a run from cron, CI, nohup or a piped
+    shell reached the `stuck` branch and died on `input()` with EOFError —
+    the exact hang-avoidance the replay guard exists to provide, missing on
+    the path more likely to be run unattended in production.
+    """
+    return sys.stdin.isatty()
 
 
 def prompt_operator(request: InterventionRequest, handoff: HandoffController, logger=None) -> dict:

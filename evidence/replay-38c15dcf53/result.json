@@ -1,0 +1,21 @@
+{
+  "kind": "failure",
+  "capability_id": "parabank.open-new-account",
+  "capability_version": "0.1.0",
+  "outputs": {},
+  "business_outcome_code": null,
+  "failed_step_id": "step-6-click",
+  "expected": "policy permits this step",
+  "observed": "risk=irreversible is blocked unattended",
+  "recovered_steps": [],
+  "resolved_via": {
+    "step-1-fill": "css",
+    "step-2-fill": "css",
+    "step-3-click": "role",
+    "step-4-click": "role",
+    "step-5-select": "css"
+  },
+  "escalated": true,
+  "intervention_path": "/Users/tejasthandi/PycharmProjects/parabank-computer-use/evidence/replay-38c15dcf53/interventions/1789380974176-step-6-click-0.json",
+  "evidence_path": "evidence/replay-38c15dcf53"
+}

@@ -16,12 +16,13 @@ it's mechanical rather than asking someone to self-report.
 
 from __future__ import annotations
 
-from enum import Enum
+# Re-exported: the enum now lives on the surface, because the session is
+# what can be driven and therefore what has to enforce who may drive it
+# (see surface/control.py). Existing `from cua.escalation.handoff import
+# Controller` call sites are unaffected.
+from cua.surface.control import Controller
 
-
-class Controller(str, Enum):
-    AUTOMATION = "automation"
-    HUMAN = "human"
+__all__ = ["Controller", "HandoffController"]
 
 
 class HandoffController:
@@ -31,9 +32,24 @@ class HandoffController:
         self.human_actions_log: list[dict] = []
         self._pre_handoff_snapshot: dict | None = None
 
+    def _tell_surface(self, controller: Controller) -> None:
+        """Push the control state down to the session that enforces it.
+
+        `surface` is duck-typed here on purpose (tests drive this with fake
+        surfaces), so a surface that doesn't implement `set_controller`
+        simply isn't gated — it keeps working exactly as before rather than
+        failing. The real BrowserSurface does implement it.
+        """
+        setter = getattr(self.surface, "set_controller", None)
+        if setter is not None:
+            setter(controller)
+
     def pause_and_cede(self, reason: str) -> dict:
         self.controller = Controller.HUMAN
+        # Observe BEFORE ceding: the snapshot is automation's last look at
+        # the session, and observation stays permitted afterwards anyway.
         obs = self.surface.observe()
+        self._tell_surface(Controller.HUMAN)
         self._pre_handoff_snapshot = {"reason": reason, "url": obs.url, "aria_snapshot": obs.aria_snapshot}
         return self._pre_handoff_snapshot
 
@@ -56,6 +72,7 @@ class HandoffController:
             }
         )
         self.controller = Controller.AUTOMATION
+        self._tell_surface(Controller.AUTOMATION)
         self._pre_handoff_snapshot = None
         return after
 
